@@ -1,0 +1,8 @@
+# Pinned to the versions tested locally on 1 Oct 2026 (Python 3.13).
+streamlit==1.64.0
+google-genai==2.26.0
+pydantic==2.13.5
+openpyxl==3.1.5
+python-docx==1.2.0
+pandas==3.0.6
+pillow==12.3.0
