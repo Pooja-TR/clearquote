@@ -3,6 +3,31 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 
+import importlib
+
+
+def _load_helpers():
+    """After a git push, Streamlit Cloud re-runs this file but can keep the OLD helper modules in memory, so new names are
+    missing (ImportError on the live app). Check each helper for names this version needs; once one is stale, reload it
+    and every helper after it, since each imports from the ones before."""
+    needs = [("schema", ("SupportDoc",)), ("extract", ("generate", "extract_support", "support_is_cached")),
+             ("normalize", ("attach_evidence", "match_vendor", "EVIDENCE_FLAGS")), ("analyst", ("ask", "EVIDENCE_FLAGS"))]
+    stale = False
+    for name, names in needs:
+        try:
+            m = importlib.import_module(name)
+        except ImportError:  # it imports a name a stale earlier helper lacks; earlier helpers were reloaded above
+            stale = True
+            continue
+        if stale or any(not hasattr(m, n) for n in names):
+            stale = True
+            importlib.reload(m)
+    if stale:  # retry anything that failed to import
+        for name, _ in needs:
+            importlib.import_module(name)
+
+
+_load_helpers()
 import extract
 from normalize import build_cells, summarise, all_open_flags, vendor_eligibility, attach_evidence
 from analyst import ask
