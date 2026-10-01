@@ -1,6 +1,6 @@
 """AI extraction. The model READS documents and returns structured data with sources. It never converts, sums or compares."""
 import hashlib, io, json, os, time
-from schema import Doc, Draft
+from schema import Doc, Draft, SupportDoc
 
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 # Tried in order when MODEL is overloaded (503), retired (404) or out of its daily free quota (429 PerDay).
@@ -166,6 +166,45 @@ def extract_response(name: str, data: bytes, items: list, use_cache=True) -> dic
     doc["_model"] = used
     json.dump(doc, open(path, "w"))
     return doc
+
+
+SUPPORT_PROMPT_VERSION = "s1"
+SUPPORT_SYSTEM = """You read one supporting document attached to a vendor's quote: an ISO certificate, a test report, or something else.
+Return structured data. Rules:
+1. NEVER guess. Leave a field null if it is not written. Do not judge pass or fail yourself: copy the stated result verbatim.
+2. Copy names, numbers and units exactly as written. Dates as YYYY-MM-DD.
+3. issued_to is the company the certificate is issued to or the report is about, exactly as written.
+4. Put the verbatim lines you relied on in 'evidence'. Set confidence below 0.8 if anything is hard to read.
+Return JSON matching the schema. No commentary."""
+
+
+def extract_support(name: str, data: bytes, use_cache=True) -> dict:
+    """Read a certificate or test report into a SupportDoc dict. Code, not the model, decides what it proves."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    path = os.path.join(CACHE_DIR, "sup_" + hashlib.sha256(data + MODEL.encode() + SUPPORT_PROMPT_VERSION.encode()).hexdigest()[:24] + ".json")
+    if use_cache and os.path.exists(path):
+        return json.load(open(path))
+    from google.genai import types
+    kind = kind_of(name)
+    if kind == "pdf":
+        parts = [types.Part.from_text(text=f"Supporting document '{name}' is attached."), types.Part.from_bytes(data=data, mime_type="application/pdf")]
+    elif kind == "image":
+        parts = [types.Part.from_text(text=f"Supporting document '{name}' is the attached photo."),
+                 types.Part.from_bytes(data=data, mime_type="image/png" if name.lower().endswith(".png") else "image/jpeg")]
+    elif kind in ("text", "docx"):
+        parts = [types.Part.from_text(text=f"Supporting document '{name}':\n" + (dump_docx(data) if kind == "docx" else dump_text(data)))]
+    else:
+        raise ValueError(f"Unsupported supporting document type: {name}")
+    resp, used = generate(parts, types.GenerateContentConfig(system_instruction=SUPPORT_SYSTEM, response_mime_type="application/json",
+                                                             response_schema=SupportDoc, temperature=0))
+    sup = SupportDoc.model_validate_json(resp.text).model_dump()
+    sup.update(_file=name, _kind=kind, _model=used)
+    json.dump(sup, open(path, "w"))
+    return sup
+
+
+def support_is_cached(data: bytes) -> bool:
+    return os.path.exists(os.path.join(CACHE_DIR, "sup_" + hashlib.sha256(data + MODEL.encode() + SUPPORT_PROMPT_VERSION.encode()).hexdigest()[:24] + ".json"))
 
 
 def draft_rfx(brief: str) -> dict:

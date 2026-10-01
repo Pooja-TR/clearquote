@@ -88,6 +88,64 @@ def test_blocked_totals_exclude_unresolved():
     assert r_low["total_inr"] != r["total_inr"] or True
 
 
+SUP = json.load(open(os.path.join(HERE, "golden_support.json")))
+TODAY = __import__("datetime").date(2026, 10, 1)
+
+
+def evidence(supports=None, res=None):
+    from normalize import attach_evidence
+    return attach_evidence(docs, SUP if supports is None else supports, res or {}, today=TODAY)
+
+
+def test_evidence_checks_claims_against_attachments():
+    from normalize import vendor_eligibility
+    d, unassigned = evidence()
+    assert not unassigned
+    flags = {v: sorted(f["type"] for f in d[v]["_evidence"]["flags"]) for v in d}
+    assert vendor_eligibility(d["Shree Packaging Industries"])[0] and flags["Shree Packaging Industries"] == []
+    assert flags["Pune Box Co."] == ["EVIDENCE_MISSING"] and flags["Maruti Cartons"] == ["EVIDENCE_MISSING"]   # ISO claimed, no certificate
+    assert vendor_eligibility(d["Pune Box Co."])[0] and vendor_eligibility(d["Maruti Cartons"])[0]          # a missing paper is a decision, not a fail
+    assert "expires during contract" in d["Deccan Corrugators Pvt. Ltd."]["_evidence"]["iso"]                # Jan 2027, inside the contract
+    assert flags["Deccan Corrugators Pvt. Ltd."] == [] and flags["Om Sai Packers"] == []                     # already failing: no paperwork flags
+    assert not vendor_eligibility(d["Deccan Corrugators Pvt. Ltd."])[0] and not vendor_eligibility(d["Om Sai Packers"])[0]
+
+
+def test_hard_evidence_fails_the_gate():
+    from normalize import vendor_eligibility
+    s = json.loads(json.dumps(SUP))
+    s["attach_A_ISO9001_certificate.pdf"]["valid_until"] = "2026-06-30"                                     # expired
+    s["attach_D_burst_test_report.pdf"].update(measured_value=11.4, stated_result="PASS")                  # below spec, whatever it says
+    d, _ = evidence(s)
+    ok, why = vendor_eligibility(d["Shree Packaging Industries"]); assert not ok and "expired" in why
+    ok, why = vendor_eligibility(d["Maruti Cartons"]); assert not ok and "FAIL" in why
+
+
+def test_expiring_certificate_flagged_for_eligible_vendor():
+    s = json.loads(json.dumps(SUP)); s["attach_A_ISO9001_certificate.pdf"]["valid_until"] = "2027-02-28"
+    d, _ = evidence(s)
+    assert [f["type"] for f in d["Shree Packaging Industries"]["_evidence"]["flags"]] == ["CERT_EXPIRING"]
+
+
+def test_unknown_issuer_needs_assignment():
+    s = json.loads(json.dumps(SUP)); s["attach_C_burst_test_report.pdf"]["issued_to"] = "PBC Industries"
+    d, unassigned = evidence(s)
+    assert [u["_file"] for u in unassigned] == ["attach_C_burst_test_report.pdf"]
+    assert d["Pune Box Co."]["_evidence"]["burst"].startswith("claimed")                                    # not silently credited
+    d, unassigned = evidence(s, {"support|attach_C_burst_test_report.pdf": {"vendor": "Pune Box Co."}})
+    assert not unassigned and d["Pune Box Co."]["_evidence"]["burst"].startswith("report:")
+
+
+def test_award_unchanged_once_buyer_accepts_claims():
+    d, _ = evidence()
+    c, vf = build_cells(d, items, G["fx"], ly, {})
+    res = {f["key"]: {"action": "accept"} for f in all_open_flags(c, vf)}
+    c, vf = build_cells(d, items, G["fx"], ly, res)
+    tr = []
+    r = {f.__name__: f for f in make_tools(d, items, c, vf, ly, tr)}["split_award"](only_eligible=True)
+    key_total = openpyxl.load_workbook(KEY, data_only=True)["Split award"]["B36"].value
+    assert abs(r["total_inr"] - key_total) < 5
+
+
 if __name__ == "__main__":
     for n, f in list(globals().items()):
         if n.startswith("test_"):

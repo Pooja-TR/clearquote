@@ -1,6 +1,6 @@
 """Analyst tools. The model chooses which tool to call; plain code computes every number it quotes."""
 import os
-from normalize import vendor_eligibility, summarise, all_open_flags
+from normalize import vendor_eligibility, summarise, all_open_flags, EVIDENCE_FLAGS
 
 SYSTEM = """You are a procurement analyst helping a category buyer award a contract.
 Rules:
@@ -11,7 +11,8 @@ Rules:
 - Answer every part of the question. If it asks whether something should change the decision, weigh the quality gate and open flags, then say yes or no and why.
 - Amounts are in INR. Use lakh/crore formatting for large amounts (Rs 38.4 lakh).
 - Keep answers concise. The interface already shows the tables and charts from the tool results: never draw charts or long tables in text.
-- A line 'assumed from last year' was NOT quoted by the vendor. Never count it as quoted."""
+- A line 'assumed from last year' was NOT quoted by the vendor. Never count it as quoted.
+- A quality claim with no attached certificate or report is a claim, not evidence. Say so when it matters to the award."""
 
 
 def make_tools(docs, items, cells, vflags, last_year, trace):
@@ -118,7 +119,8 @@ def make_tools(docs, items, cells, vflags, last_year, trace):
                    calculation=f"Per line: min usable price among {'quality-gate-passing' if only_eligible else 'all'} vendors x annual quantity; summed. "
                                f"Last-year cost uses last year's rate x same quantity for the awarded lines.",
                    caveats=excluded_notes(only_eligible, include_low_confidence) +
-                           ([f"{len(uncovered)} line(s) have no usable price and are left out of the total."] if uncovered else []))
+                           ([f"{len(uncovered)} line(s) have no usable price and are left out of the total."] if uncovered else []) +
+                           [f"{v}: {f['message']}" for v in by_vendor for f in vflags[v] if f["type"] in EVIDENCE_FLAGS and not f["resolved"]])
         return log("split_award", dict(only_eligible=only_eligible, include_low_confidence=include_low_confidence), res)
 
     def compare_vendors(vendor_a: str, vendor_b: str, item_filter: str = "") -> dict:
@@ -146,13 +148,16 @@ def make_tools(docs, items, cells, vflags, last_year, trace):
         return log("open_flags", dict(vendor=vendor), dict(table=table, count=len(table), calculation="All flags not yet accepted or resolved by the buyer.", caveats=[]))
 
     def vendor_terms() -> dict:
-        """Commercial terms and questionnaire answers per vendor: freight, payment, validity, GST, lead time, ISO, burst report, FSC, 60-day payment."""
+        """Commercial terms and questionnaire answers per vendor (freight, payment, validity, GST, lead time, ISO, burst report, FSC, 60-day payment),
+        plus what the attached certificates and test reports actually prove (iso_evidence, burst_evidence)."""
         table = []
         for v in vendors:
             d = docs[v]; t, q = d["terms"], d["questionnaire"]
             table.append(dict(vendor=v, freight=t.get("freight"), freight_included=t.get("freight_included"), freight_amount_stated=t.get("freight_amount_stated"),
                               payment=t.get("payment_terms"), validity=t.get("validity"), gst=t.get("gst"), lead_time_days=q.get("lead_time_days"),
-                              iso_9001=q["iso_9001"], burst_report=q["burst_report"], fsc=q["fsc"], accepts_60_day=q["accepts_60_day_payment"]))
+                              iso_9001=q["iso_9001"], burst_report=q["burst_report"], fsc=q["fsc"], accepts_60_day=q["accepts_60_day_payment"],
+                              iso_evidence=d.get("_evidence", {}).get("iso"), burst_evidence=d.get("_evidence", {}).get("burst"),
+                              attached_documents=d.get("_evidence", {}).get("files")))
         return log("vendor_terms", {}, dict(table=table, calculation="Terms and questionnaire answers as extracted, with source text kept in the grid inspector.",
                                             caveats=["'Not stated' means the vendor did not say, not that the answer is No."]))
 

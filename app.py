@@ -4,7 +4,7 @@ import streamlit as st
 from PIL import Image
 
 import extract
-from normalize import build_cells, summarise, all_open_flags, vendor_eligibility
+from normalize import build_cells, summarise, all_open_flags, vendor_eligibility, attach_evidence
 from analyst import ask
 
 HERE = os.path.dirname(__file__)
@@ -13,7 +13,7 @@ MAX_AI_CALLS = 120
 
 st.set_page_config(page_title="Quote comparison", page_icon="📦", layout="wide")
 S = st.session_state
-for k, v in dict(rfx=[], files={}, docs={}, resolutions={}, turns=[], last_year={}, ai_calls=0, outbox=[]).items():
+for k, v in dict(rfx=[], files={}, docs={}, supp_files={}, supports={}, resolutions={}, turns=[], last_year={}, ai_calls=0, outbox=[]).items():
     S.setdefault(k, v)
 
 
@@ -29,11 +29,15 @@ def load_sample_responses():
     for f in sorted(os.listdir(SAMPLE)):
         if f[:2] in ("A_", "B_", "C_", "D_", "E_"):
             S.files[f] = open(os.path.join(SAMPLE, f), "rb").read()
+        elif f.startswith("attach_"):
+            S.supp_files[f] = open(os.path.join(SAMPLE, f), "rb").read()
 
 
 FLAG_NAMES = {"UNIT_MISMATCH": "Unit mismatch", "LOW_CONFIDENCE": "Low-confidence reading", "UNREADABLE_PRICE": "Unreadable price",
               "AMBIGUOUS_APPLICABILITY": "Unclear which line", "BASELINE_ASSUMED": "'Same as last year'", "DISCOUNT_FOUND": "Discount found",
-              "AMBIGUOUS_TERM": "Freight / terms", "UNMATCHED_LINE": "Unmatched line", "CURRENCY_UNKNOWN": "Unknown currency"}
+              "AMBIGUOUS_TERM": "Freight / terms", "UNMATCHED_LINE": "Unmatched line", "CURRENCY_UNKNOWN": "Unknown currency",
+              "EVIDENCE_MISSING": "Claim without proof", "CERT_EXPIRING": "Certificate expiring", "TEST_SCOPE": "Test on wrong board",
+              "REPORT_OLD": "Old test report"}
 
 
 def pager(total, per_page, key):
@@ -141,11 +145,16 @@ with t2:
     up = st.file_uploader("Vendor responses", accept_multiple_files=True)
     for f in up or []:
         S.files[f.name] = f.getvalue()
+    sup_up = st.file_uploader("Supporting documents: certificates, test reports", accept_multiple_files=True,
+                              help="Matched to vendors by the company name printed on each document. You can reassign any that do not match.")
+    for f in sup_up or []:
+        S.supp_files[f.name] = f.getvalue()
     if st.button("Load the 5 sample responses"):
         if not S.rfx:
             load_sample_rfx()
         load_sample_responses(); st.rerun()
-    st.caption("Samples include an Excel in its own layout, a PDF, a Word letter, an angled phone photo and a one-line email.")
+    st.caption("Samples include an Excel in its own layout, a PDF, a Word letter, an angled phone photo and a one-line email, "
+               "plus 5 attached ISO certificates and burst test reports.")
     if S.files:
         st.dataframe(pd.DataFrame([{"File": n, "Type": extract.kind_of(n), "Size": f"{len(b) / 1024:.1f} KB",
                                     "Read": any(d.get("_file") == n for d in S.docs.values()),
@@ -157,6 +166,18 @@ with t2:
             else:
                 bar = st.progress(0.0)
                 names = list(S.files)
+                for name, data in S.supp_files.items():
+                    if name in S.supports:
+                        continue
+                    st.write(f"Reading {name} ...")
+                    try:
+                        if not extract.support_is_cached(data):
+                            if S.ai_calls >= MAX_AI_CALLS:
+                                raise RuntimeError("AI call limit reached for this session")
+                            S.ai_calls += 1
+                        S.supports[name] = extract.extract_support(name, data)
+                    except Exception as e:
+                        st.error(f"{name}: {e}")
                 for n, name in enumerate(names):
                     if any(d.get("_file") == name for d in S.docs.values()):
                         continue
@@ -172,6 +193,33 @@ with t2:
                         st.error(f"{name}: {e}")
                     bar.progress((n + 1) / len(names))
                 st.rerun()
+    if S.supp_files:
+        st.markdown("**Supporting documents**")
+        _, unassigned = attach_evidence(S.docs, S.supports, S.resolutions) if S.docs else ({}, [])
+        def owner(n):
+            r = S.resolutions.get(f"support|{n}")
+            if r:
+                return short(r["vendor"]) + " (set by you)"
+            from normalize import match_vendor
+            sd = S.supports.get(n)
+            v = match_vendor(sd["issued_to"], list(S.docs)) if sd and S.docs else None
+            return short(v) if v else ("no match" if sd else "")
+        def facts(sd):
+            if sd["doc_type"] == "iso_certificate":
+                return f"valid to {sd.get('valid_until') or 'not shown'}"
+            if sd["doc_type"] == "test_report":
+                return f"{sd.get('measured_value')} vs min {sd.get('spec_min')}, {sd.get('stated_result') or '?'}"
+            return sd.get("title") or ""
+        st.dataframe(pd.DataFrame([{"File": n, "Kind": (S.supports[n]["doc_type"].replace("_", " ") if n in S.supports else "not read yet"),
+                                    "Issued to": S.supports[n]["issued_to"] if n in S.supports else "", "Matched vendor": owner(n),
+                                    "Key facts": facts(S.supports[n]) if n in S.supports else ""} for n in S.supp_files]),
+                     hide_index=True, width="stretch")
+        for sd in unassigned:
+            with st.container(border=True):
+                st.write(f"**{sd['_file']}** is issued to '{sd['issued_to']}', which matches no vendor. Which vendor sent it?")
+                pick = st.selectbox("Vendor", list(S.docs), format_func=short, key=f"assign_{sd['_file']}")
+                if st.button("Assign", key=f"assignb_{sd['_file']}"):
+                    S.resolutions[f"support|{sd['_file']}"] = {"vendor": pick}; st.rerun()
 
 def show_crop(vendor, c):
     """Show the region of a photo a value was read from (box_2d is 0-1000 [ymin, xmin, ymax, xmax])."""
@@ -196,7 +244,8 @@ def show_crop(vendor, c):
 
 
 # ---------------------------------------------------------------- shared compute
-docs, items = S.docs, S.rfx
+items = S.rfx
+docs = attach_evidence(S.docs, S.supports, S.resolutions)[0] if S.docs else {}
 cells = vflags = None
 if docs and items:
     cells, vflags = build_cells(docs, items, fx, S.last_year, S.resolutions)
@@ -246,6 +295,16 @@ with t3:
         st.dataframe(vdf.style.map(lambda x: "color:#11743b;font-weight:600" if x == "Pass" else "color:#b42318;font-weight:600", subset=["Quality gate"]),
                      hide_index=True, width="stretch")
         st.caption("Totals cover usable lines only. A vendor with fewer usable lines is not directly comparable.")
+        st.markdown("**Quality evidence**: what each vendor claimed, and what the attached documents prove")
+        edf = pd.DataFrame([{"Vendor": short(v), "ISO 9001 claimed": d["questionnaire"]["iso_9001"], "ISO 9001 evidence": d["_evidence"]["iso"],
+                             "Burst report claimed": d["questionnaire"]["burst_report"], "Burst test evidence": d["_evidence"]["burst"],
+                             "Gate": "Pass" if vendor_eligibility(d)[0] else "Fail"} for v, d in docs.items()])
+        weak = lambda x: "color:#b45309;font-weight:600" if ("claimed, no" in str(x) or "during contract" in str(x)) else ("color:#b42318;font-weight:600" if any(w in str(x) for w in ("expired", "FAIL", "not ")) else "")
+        st.dataframe(edf.style.map(weak, subset=["ISO 9001 evidence", "Burst test evidence"])
+                        .map(lambda x: "color:#11743b;font-weight:600" if x == "Pass" else "color:#b42318;font-weight:600", subset=["Gate"]),
+                     hide_index=True, width="stretch",
+                     column_config={"Vendor": st.column_config.TextColumn(width=150), "ISO 9001 claimed": st.column_config.TextColumn("ISO claimed", width=95),
+                                    "Burst report claimed": st.column_config.TextColumn("Burst claimed", width=105), "Gate": st.column_config.TextColumn(width=60)})
 
         with st.expander("Inspect any price: where it came from"):
             ic1, ic2 = st.columns(2)
@@ -378,6 +437,7 @@ with t4:
                         if b2.button("Match to this line", key=f"mb_{k}"):
                             S.resolutions[k] = dict(action="map", item_id=int(target.split(".")[0])); st.rerun()
                     if f["type"] != "UNREADABLE_PRICE":
-                        label = "Leave it out" if f["type"] == "UNMATCHED_LINE" else "Confirm as shown" if f["item_id"] else "Accept"
+                        label = ("Leave it out" if f["type"] == "UNMATCHED_LINE" else "Accept the claim" if f["type"] == "EVIDENCE_MISSING"
+                                 else "Confirm as shown" if f["item_id"] else "Accept")
                         if b1.button(label, key=f"a_{k}"):
                             S.resolutions[k] = dict(action="accept"); st.rerun()

@@ -62,3 +62,23 @@ class Draft(BaseModel):
     items: List[DraftItem]
     questionnaire: List[str]
     terms: List[str]
+
+
+class SupportDoc(BaseModel):
+    """A certificate, test report or other supporting document attached to a vendor response."""
+    doc_type: str = Field(description="iso_certificate, test_report, or other")
+    issued_to: str = Field(description="Company the document is issued to or about, exactly as written")
+    title: str = Field("", description="Document title as written")
+    certificate_no: Optional[str] = None
+    standard: Optional[str] = Field(None, description="Standard named, e.g. 'ISO 9001:2015'")
+    valid_until: Optional[str] = Field(None, description="Expiry date as YYYY-MM-DD, only if written. Null otherwise")
+    report_date: Optional[str] = Field(None, description="Test or issue date as YYYY-MM-DD, only if written")
+    sample_tested: Optional[str] = Field(None, description="What was tested, verbatim (e.g. '5-ply RSC, BF 22')")
+    board_ply: Optional[int] = Field(None, description="Ply count of the tested board, if written")
+    bf: Optional[float] = Field(None, description="Bursting factor (BF) of the tested board, if written")
+    measured_value: Optional[float] = Field(None, description="Measured test value as a number, if written")
+    spec_min: Optional[float] = Field(None, description="Minimum required value stated on the report, if written")
+    unit: Optional[str] = Field(None, description="Unit of the measured value, verbatim")
+    stated_result: Optional[str] = Field(None, description="PASS / FAIL or similar, exactly as written")
+    evidence: str = Field("", description="Verbatim lines supporting the fields above")
+    confidence: float = Field(description="0 to 1. Below 0.8 if any field is hard to read")

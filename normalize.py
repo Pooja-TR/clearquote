@@ -1,4 +1,5 @@
 """Plain-code normalisation. No model calls here: every number a buyer relies on is computed in this file."""
+import datetime as dt
 import re
 
 THRESH = 0.8
@@ -48,7 +49,107 @@ def _flag(vendor, item_id, ftype, severity, msg, resolutions, key_suffix=""):
                 resolved=res is not None, resolution=res)
 
 
+# What the RFx questionnaire asks for (Q1: ISO 9001, attach certificate; Q2: burst report for 5-ply BF 22).
+REQUIRE = dict(burst_ply=5, burst_bf=22, contract_days=365, report_max_age_days=365)
+EVIDENCE_FLAGS = ("EVIDENCE_MISSING", "CERT_EXPIRING", "TEST_SCOPE", "REPORT_OLD")
+_SUFFIX_WORDS = {"pvt", "private", "ltd", "limited", "llp", "inc", "co", "company", "the"}
+
+
+def _name_tokens(n):
+    return {w for w in re.sub(r"[^a-z0-9 ]", " ", (n or "").lower()).split() if w not in _SUFFIX_WORDS}
+
+
+def match_vendor(issued_to, vendors):
+    """Vendor a document belongs to, by company name. None if no confident match."""
+    t = _name_tokens(issued_to)
+    best, score = None, 0.0
+    for v in vendors:
+        u = _name_tokens(v)
+        if t and u:
+            sc = len(t & u) / len(t | u)
+            if sc > score:
+                best, score = v, sc
+    return best if score >= 0.6 else None
+
+
+def _date(s):
+    try:
+        return dt.date.fromisoformat(s) if s else None
+    except ValueError:
+        return None
+
+
+def attach_evidence(docs, supports, resolutions, today=None):
+    """Check each vendor's questionnaire claims against the documents actually attached. Plain code; the model only read them.
+    supports: {file name: SupportDoc dict}. A buyer can reassign a document with resolution 'support|<file>' = {'vendor': name}.
+    Returns (docs with '_evidence' added, list of documents that match no vendor)."""
+    today = today or dt.date.today()
+    vendors = list(docs)
+    linked, unassigned = {v: [] for v in vendors}, []
+    for f, sd in supports.items():
+        r = resolutions.get(f"support|{f}")
+        v = r["vendor"] if r and r.get("vendor") in docs else match_vendor(sd.get("issued_to"), vendors)
+        (linked[v].append(sd) if v else unassigned.append(sd))
+    out = {}
+    for v, doc in docs.items():
+        q, flags = doc["questionnaire"], []
+        certs = [d for d in linked[v] if d["doc_type"] == "iso_certificate" and "9001" in f"{d.get('standard')} {d.get('title')} {d.get('evidence')}"]
+        reports = [d for d in linked[v] if d["doc_type"] == "test_report"]
+        # ISO 9001
+        if certs:
+            c = max(certs, key=lambda d: _date(d.get("valid_until")) or dt.date.min)
+            until = _date(c.get("valid_until"))
+            if until and until < today:
+                iso_ok, iso = False, f"certificate expired on {until:%d %b %Y} ({c['_file']})"
+            else:
+                iso_ok = True
+                iso = f"certificate valid to {until:%d %b %Y}" if until else "certificate, no expiry date shown"
+                if until and until < today + dt.timedelta(days=REQUIRE["contract_days"]):
+                    iso += " (expires during contract)"
+                if until and until < today + dt.timedelta(days=REQUIRE["contract_days"]):
+                    flags.append(_flag(v, 0, "CERT_EXPIRING", "decision",
+                                       f"ISO 9001 certificate expires on {until:%d %b %Y}, inside the 12-month contract ({c['_file']}). Ask for the renewal.", resolutions))
+        elif q["iso_9001"] == "Yes":
+            iso_ok, iso = True, "claimed, no certificate"
+            flags.append(_flag(v, 0, "EVIDENCE_MISSING", "decision",
+                               "Says ISO 9001 certified, but no certificate was attached and the RFx asked for one. Accept the claim or request the certificate.",
+                               resolutions, key_suffix="#iso"))
+        else:
+            iso_ok, iso = False, f"not certified ({q['iso_9001']})"
+        # Burst test report
+        if reports:
+            r = max(reports, key=lambda d: _date(d.get("report_date")) or dt.date.min)
+            m, mn = r.get("measured_value"), r.get("spec_min")
+            passed = (m >= mn) if (m is not None and mn is not None) else "PASS" in (r.get("stated_result") or "").upper()
+            figure = f"{m:g} vs min {mn:g}" if (m is not None and mn is not None) else f"stated '{r.get('stated_result')}'"
+            burst_ok, burst = passed, f"report: {figure}, {'pass' if passed else 'FAIL'}"
+            if r.get("board_ply") not in (None, REQUIRE["burst_ply"]) or (r.get("bf") is not None and r["bf"] < REQUIRE["burst_bf"]):
+                flags.append(_flag(v, 0, "TEST_SCOPE", "decision",
+                                   f"The report tests '{r.get('sample_tested')}', not the 5-ply BF 22 board the RFx asked about ({r['_file']}).", resolutions))
+            rd = _date(r.get("report_date"))
+            if rd and (today - rd).days > REQUIRE["report_max_age_days"]:
+                flags.append(_flag(v, 0, "REPORT_OLD", "decision", f"Burst report is dated {rd:%d %b %Y}, over a year old ({r['_file']}).", resolutions))
+        elif q["burst_report"] == "Yes":
+            burst_ok, burst = True, "claimed, no report file"
+            flags.append(_flag(v, 0, "EVIDENCE_MISSING", "decision",
+                               "Says the burst test report is provided, but no report file was received. Accept the claim or request the report.",
+                               resolutions, key_suffix="#burst"))
+        else:
+            burst_ok, burst = False, f"not provided ({q['burst_report']})"
+        if not (iso_ok and burst_ok):
+            flags = []  # the vendor already fails the gate; asking the buyer to rule on its paperwork is noise (the table still shows it)
+        out[v] = {**doc, "_evidence": dict(iso_ok=iso_ok, iso=iso, burst_ok=burst_ok, burst=burst, flags=flags,
+                                           files=[d["_file"] for d in linked[v]])}
+    return out, unassigned
+
+
 def vendor_eligibility(doc):
+    ev = doc.get("_evidence")
+    if ev:
+        if ev["iso_ok"] and ev["burst_ok"]:
+            return True, f"ISO 9001: {ev['iso']}; burst test: {ev['burst']}"
+        return False, "; ".join(x for x in ([f"ISO 9001: {ev['iso']}"] if not ev["iso_ok"] else []) +
+                                ([f"burst test: {ev['burst']}"] if not ev["burst_ok"] else []))
     q = doc["questionnaire"]
     if q["iso_9001"] == "Yes" and q["burst_report"] == "Yes":
         return True, "ISO 9001 and burst report both provided"
@@ -61,7 +162,7 @@ def vendor_eligibility(doc):
 
 
 def vendor_flags(v, doc, resolutions):
-    out = []
+    out = list(doc.get("_evidence", {}).get("flags", []))
     for d in doc.get("discounts", []):
         out.append(_flag(v, 0, "DISCOUNT_FOUND", "decision",
                          f"{d['percent']}% discount found ({d['source_ref']}): \"{_clip(d['source_snippet'], 300)}\". Not applied until you accept it.", resolutions))
