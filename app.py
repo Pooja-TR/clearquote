@@ -287,7 +287,7 @@ with t3:
                     except Exception as e:
                         ans, trace, model = f"The analyst call failed: {e}", [], None
                 S.turns.append(dict(n=len(S.turns) + 1, q=question, a=ans, trace=trace, model=model,
-                                    at=pd.Timestamp.now().strftime("%H:%M")))
+                                    at=pd.Timestamp.now(tz="Asia/Kolkata").strftime("%H:%M IST")))
                 st.rerun()
 
         if S.turns:
