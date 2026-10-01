@@ -58,11 +58,64 @@ def load_sample_responses():
             S.supp_files[f] = open(os.path.join(SAMPLE, f), "rb").read()
 
 
-FLAG_NAMES = {"UNIT_MISMATCH": "Unit mismatch", "LOW_CONFIDENCE": "Low-confidence reading", "UNREADABLE_PRICE": "Unreadable price",
-              "AMBIGUOUS_APPLICABILITY": "Unclear which line", "BASELINE_ASSUMED": "'Same as last year'", "DISCOUNT_FOUND": "Discount found",
-              "AMBIGUOUS_TERM": "Freight / terms", "UNMATCHED_LINE": "Unmatched line", "CURRENCY_UNKNOWN": "Unknown currency",
-              "EVIDENCE_MISSING": "Claim without proof", "CERT_EXPIRING": "Certificate expiring", "TEST_SCOPE": "Test on wrong board",
-              "REPORT_OLD": "Old test report"}
+FLAG_NAMES = {"UNIT_MISMATCH": "Different unit or pack size", "LOW_CONFIDENCE": "AI unsure of this number", "UNREADABLE_PRICE": "Price unreadable",
+              "AMBIGUOUS_APPLICABILITY": "Unclear which item", "BASELINE_ASSUMED": "Not re-quoted ('same as last year')",
+              "DISCOUNT_FOUND": "Discount offered", "AMBIGUOUS_TERM": "Delivery (freight) cost unknown", "UNMATCHED_LINE": "Couldn't match to an item",
+              "CURRENCY_UNKNOWN": "Unknown currency", "EVIDENCE_MISSING": "Said yes, no document", "CERT_EXPIRING": "Certificate expiring",
+              "TEST_SCOPE": "Test done on a different box type", "REPORT_OLD": "Old test report"}
+TOOL_NAMES = {"split_award": "Who gets the order (split award)", "lowest_price_per_item": "Cheapest vendor per item",
+              "vendor_overview": "Vendor summary", "compare_vendors": "Vendor vs vendor", "open_flags": "Things to check",
+              "vendor_terms": "Terms and quality documents"}
+STATUS_NAMES = {"ok": "Confirmed", "converted": "Confirmed, converted from USD", "blocked": "Needs your decision (not in totals)",
+                "assumed": "Not re-quoted: last year's price, needs your decision", "not_quoted": "Not quoted"}
+GLOSSARY = """
+- **Request for quotes (RFx)**: the list of items you ask vendors to price.
+- **Who gets the order (award)**: the final decision on which vendor supplies which item. A *split award* gives each item to the cheapest vendor that passed the quality check; a *single award* gives everything to one vendor.
+- **Quality check**: must-haves from the request: an ISO 9001 certificate and a burst test report.
+- **ISO 9001**: a widely used certificate that a factory runs a proper quality system.
+- **Burst test (BF, Mullen)**: how much pressure a box survives before bursting. BF is the board's bursting factor.
+- **Delivery (freight)**: transport cost. *Ex-works* means the price excludes delivery; *FOR Pune* means delivered to the plant.
+- **Not re-quoted**: the vendor said "same as last year" instead of giving a price.
+- **Things to check**: anything the app will not decide for you, such as a smudged price or a price per 100 instead of per box.
+"""
+
+
+COLUMN_WORDS = {"item_id": "Item no.", "inr": "(Rs)", "qty": "Yearly quantity", "lines": "items", "line": "item", "flag": "To check",
+                "best": "Cheapest", "runner up": "Next cheapest", "passes quality gate": "Passes quality check", "gate note": "Quality check note",
+                "open flags": "Things to check", "of total": "Out of", "iso 9001": "ISO 9001 (said)", "burst report": "Burst report (said)"}
+
+
+def plain_table(rows):
+    """Tool tables for people: readable headings, short vendor names, no raw codes."""
+    df = pd.DataFrame(rows)
+    if "flag" in df:
+        df["flag"] = df["flag"].map(lambda x: FLAG_NAMES.get(x, x))
+
+    def head(c):
+        if c in COLUMN_WORDS:
+            return COLUMN_WORDS[c]
+        h = c.replace("_", " ")
+        for k, w in COLUMN_WORDS.items():
+            h = re.sub(rf"\b{k}\b", w, h)
+        return h[:1].upper() + h[1:]
+    df.columns = [short(c) if c in docs else head(c) for c in df.columns]
+    return df.map(lambda x: short(x) if isinstance(x, str) and x in docs else x)
+
+
+def plain_args(args):
+    """Tool settings in words, for 'How this was worked out'."""
+    out = []
+    if args.get("only_eligible"):
+        out.append("only vendors that passed the quality check")
+    elif "only_eligible" in args:
+        out.append("all vendors, including those that failed the quality check")
+    if args.get("include_low_confidence"):
+        out.append("including numbers the AI was unsure of")
+    if args.get("vendor_a"):
+        out.append(f"{short(args['vendor_a'])} vs {short(args['vendor_b'])}" + (f", items containing '{args['item_filter']}'" if args.get("item_filter") else ""))
+    if args.get("vendor"):
+        out.append(f"vendor: {short(args['vendor'])}")
+    return "; ".join(out)
 
 
 def pager(total, per_page, key):
@@ -100,10 +153,15 @@ def fmt_inr(x):
 
 with st.sidebar:
     st.header("Settings")
-    fx = st.number_input("USD to INR rate", value=85.0, step=0.5, help="Demo rate. Used by code, never by the model.")
-    st.caption("Rate date: demo value, set per RFx in a real deployment.")
-    st.caption(f"Main model: {extract.MODEL}. If it is busy or out of free quota, a backup model answers; each file and answer shows which one.")
-    st.caption(f"AI calls this session: {S.ai_calls}/{MAX_AI_CALLS}")
+    fx = st.number_input("Dollar to rupee rate (USD to INR)", value=85.0, step=0.5,
+                         help="Used to convert prices quoted in US dollars. Applied by the calculations, never by the AI.")
+    st.caption("Demo rate. In real use it would be fixed per request, with its date.")
+    st.caption(f"AI questions used this session: {S.ai_calls} of {MAX_AI_CALLS}")
+    with st.expander("What do these words mean?"):
+        st.markdown(GLOSSARY)
+    with st.expander("Technical details"):
+        st.caption(f"AI assistant: Google Gemini. Main model {extract.MODEL}; if it is busy or out of free quota, a backup model answers. "
+                   "Each file and answer shows which model was used.")
 
 # Visual polish only: colours come from .streamlit/config.toml; this adds the header band, card shadows and tab styling.
 st.markdown("""<style>
@@ -127,17 +185,17 @@ st.markdown("""<style>
 .legend span {display: inline-block; padding: 2px 10px; border-radius: 6px; margin: 0 6px 4px 0; font-size: .82rem; border: 1px solid #dcd8f2;}
 </style>
 <div class="hero"><h1>Kill the quote spreadsheet</h1>
-<p>Messy vendor quotes in, one defensible comparison out. The model reads; plain code computes every number.</p>
-<div class="steps"><span><b>1</b>Draft the RFx</span><span><b>2</b>Read any reply</span><span><b>3</b>Compare and ask</span><span><b>4</b>Resolve flags</span></div>
+<p>Messy vendor quotes in, one comparison you can defend. AI reads the quotes; every number is calculated, never guessed.</p>
+<div class="steps"><span><b>1</b>Ask for quotes</span><span><b>2</b>Read any reply</span><span><b>3</b>Compare and ask</span><span><b>4</b>Check what's unclear</span></div>
 </div>""", unsafe_allow_html=True)
-t1, t2, t3, t4 = st.tabs(["1. Create RFx", "2. Responses", "3. Compare and ask", "4. Review flags"])
+t1, t2, t3, t4 = st.tabs(["1. Request for quotes", "2. Vendor replies", "3. Compare and ask", "4. Things to check"])
 
 # ---------------------------------------------------------------- tab 1
 with t1:
-    st.write("Describe what you need. The co-pilot drafts line items, a questionnaire and terms. You confirm.")
+    st.write("Describe what you need. The AI drafts the item list, quality questions and terms for your request (RFx). You review and edit.")
     brief = st.text_area("What do you need to buy?", placeholder="30 corrugated packaging items for our Pune electronics plant: shipper boxes, mailers, sheets, pallet caps. 60-day payment.", height=90)
     c1, c2 = st.columns(2)
-    if c1.button("Draft RFx with AI") and brief:
+    if c1.button("Draft the request with AI") and brief:
         if S.ai_calls >= MAX_AI_CALLS:
             st.error("AI call limit reached for this session.")
         else:
@@ -149,7 +207,7 @@ with t1:
                     S.draft_extra = d
                 except Exception as e:
                     st.error(f"Draft failed: {e}")
-    if c2.button("Load sample RFx (30 lines)"):
+    if c2.button("Load sample request (30 items)"):
         load_sample_rfx(); st.rerun()
     if S.rfx:
         df = st.data_editor(pd.DataFrame(S.rfx), num_rows="dynamic", width="stretch", hide_index=True, key="items_editor")
@@ -167,14 +225,14 @@ with t1:
 # ---------------------------------------------------------------- tab 2
 with t2:
     st.write("Vendors reply however they like. Drop in whatever arrives: Excel, PDF, Word, a photo, an email.")
-    up = st.file_uploader("Vendor responses", accept_multiple_files=True)
+    up = st.file_uploader("Vendor replies (quotes)", accept_multiple_files=True)
     for f in up or []:
         S.files[f.name] = f.getvalue()
     sup_up = st.file_uploader("Supporting documents: certificates, test reports", accept_multiple_files=True,
                               help="Matched to vendors by the company name printed on each document. You can reassign any that do not match.")
     for f in sup_up or []:
         S.supp_files[f.name] = f.getvalue()
-    if st.button("Load the 5 sample responses"):
+    if st.button("Load the 5 sample replies"):
         if not S.rfx:
             load_sample_rfx()
         load_sample_responses(); st.rerun()
@@ -185,9 +243,9 @@ with t2:
                                     "Read": any(d.get("_file") == n for d in S.docs.values()),
                                     "Read by": next((d.get("_model", "") for d in S.docs.values() if d.get("_file") == n), "")} for n, b in S.files.items()]),
                      hide_index=True, width="stretch")
-        if st.button("Read responses with AI", type="primary"):
+        if st.button("Read replies with AI", type="primary"):
             if not S.rfx:
-                st.error("Create or load the RFx first (tab 1).")
+                st.error("Create or load the request first (tab 1).")
             else:
                 bar = st.progress(0.0)
                 names = list(S.files)
@@ -235,7 +293,7 @@ with t2:
             if sd["doc_type"] == "test_report":
                 return f"{sd.get('measured_value')} vs min {sd.get('spec_min')}, {sd.get('stated_result') or '?'}"
             return sd.get("title") or ""
-        st.dataframe(pd.DataFrame([{"File": n, "Kind": (S.supports[n]["doc_type"].replace("_", " ") if n in S.supports else "not read yet"),
+        st.dataframe(pd.DataFrame([{"File": n, "Kind": ({"iso_certificate": "ISO certificate", "test_report": "test report"}.get(S.supports[n]["doc_type"], "other") if n in S.supports else "not read yet"),
                                     "Issued to": S.supports[n]["issued_to"] if n in S.supports else "", "Matched vendor": owner(n),
                                     "Key facts": facts(S.supports[n]) if n in S.supports else ""} for n in S.supp_files]),
                      hide_index=True, width="stretch")
@@ -278,16 +336,16 @@ if docs and items:
 # ---------------------------------------------------------------- tab 3
 with t3:
     if not cells:
-        st.info("Add the RFx and read the responses first.")
+        st.info("Load the request and read the vendor replies first (tabs 1 and 2).")
     else:
         rows, ready = summarise(docs, items, cells, vflags)
         nopen = len(all_open_flags(cells, vflags))
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Comparison ready", f"{ready:.0%}")
-        m2.metric("Flags needing a decision", nopen, help="Resolve them in tab 4. Unresolved prices are excluded from every total.")
-        m3.metric("Pass quality gate", f"{sum(r['eligible'] for r in rows)} of {len(rows)}", help="ISO 9001 and a burst test report provided now.")
-        m4.metric("Usable prices", f"{sum(c['price'] is not None for v in docs for c in cells[v].values())} of {len(docs) * len(items)}",
-                  help="Vendor x line cells with a confirmed or converted price. Everything else is excluded from totals.")
+        m1.metric("Comparison complete", f"{ready:.0%}")
+        m2.metric("Things to check", nopen, help="Decide them in tab 4. Prices waiting on a decision are left out of every total.")
+        m3.metric("Pass quality check", f"{sum(r['eligible'] for r in rows)} of {len(rows)}", help="ISO 9001 certified and a burst test report provided.")
+        m4.metric("Prices ready to use", f"{sum(c['price'] is not None for v in docs for c in cells[v].values())} of {len(docs) * len(items)}",
+                  help="One price per vendor per item. Only confirmed or converted prices count; the rest are left out of totals.")
         st.progress(ready)
         vend = list(docs)
         grid, sty = [], []
@@ -310,49 +368,49 @@ with t3:
         gdf = pd.DataFrame(grid)
         st.markdown('<div class="legend"><span style="background:#fff">confirmed</span><span style="background:#ebe6ff">converted from USD</span>'
                     '<span style="background:#ffe9d6">? needs your decision, excluded from totals</span>'
-                    '<span style="background:#eeeeee;color:#777">not quoted</span> <small>Prices are Rs per RFx unit.</small></div>', unsafe_allow_html=True)
+                    '<span style="background:#eeeeee;color:#777">not quoted</span> <small>Prices are in Rs, per unit asked for in the request.</small></div>', unsafe_allow_html=True)
         st.dataframe(gdf.style.apply(lambda _: pd.DataFrame([{**{"Item": "", "Unit": "", "Qty": ""}, **s} for s in sty], columns=gdf.columns), axis=None),
                      width="stretch", hide_index=True, height=min(35 * (len(items) + 1) + 3, 1100),
                      column_config={"Item": st.column_config.TextColumn(width=240, pinned=True), "Unit": st.column_config.TextColumn(width=86), "Qty": st.column_config.NumberColumn(format="localized")})
-        vdf = pd.DataFrame([{"Vendor": short(r["vendor"]), "Quality gate": ("Pass" if r["eligible"] else f"Fail: {r['eligibility_note']}"),
-                             "Lines usable": f"{r['lines_usable']} of {len(items)}", "Total of usable lines": fmt_inr(r["total"]),
-                             "Open flags": r["open_flags"]} for r in rows])
-        st.dataframe(vdf.style.map(lambda x: "color:#11743b;font-weight:600" if x == "Pass" else "color:#b42318;font-weight:600", subset=["Quality gate"]),
+        vdf = pd.DataFrame([{"Vendor": short(r["vendor"]), "Quality check": ("Pass" if r["eligible"] else f"Fail: {r['eligibility_note']}"),
+                             "Items with a usable price": f"{r['lines_usable']} of {len(items)}", "Total for those items": fmt_inr(r["total"]),
+                             "Things to check": r["open_flags"]} for r in rows])
+        st.dataframe(vdf.style.map(lambda x: "color:#11743b;font-weight:600" if x == "Pass" else "color:#b42318;font-weight:600", subset=["Quality check"]),
                      hide_index=True, width="stretch")
-        st.caption("Totals cover usable lines only. A vendor with fewer usable lines is not directly comparable.")
+        st.caption("Totals only add up items with a usable price, so a vendor with fewer usable items is not directly comparable.")
         st.markdown("**Quality evidence**: what each vendor claimed, and what the attached documents prove")
         edf = pd.DataFrame([{"Vendor": short(v), "ISO 9001 claimed": d["questionnaire"]["iso_9001"], "ISO 9001 evidence": d["_evidence"]["iso"],
                              "Burst report claimed": d["questionnaire"]["burst_report"], "Burst test evidence": d["_evidence"]["burst"],
-                             "Gate": "Pass" if vendor_eligibility(d)[0] else "Fail"} for v, d in docs.items()])
+                             "Quality check": "Pass" if vendor_eligibility(d)[0] else "Fail"} for v, d in docs.items()])
         weak = lambda x: "color:#b45309;font-weight:600" if ("claimed, no" in str(x) or "during contract" in str(x)) else ("color:#b42318;font-weight:600" if any(w in str(x) for w in ("expired", "FAIL", "not ")) else "")
         st.dataframe(edf.style.map(weak, subset=["ISO 9001 evidence", "Burst test evidence"])
-                        .map(lambda x: "color:#11743b;font-weight:600" if x == "Pass" else "color:#b42318;font-weight:600", subset=["Gate"]),
+                        .map(lambda x: "color:#11743b;font-weight:600" if x == "Pass" else "color:#b42318;font-weight:600", subset=["Quality check"]),
                      hide_index=True, width="stretch",
                      column_config={"Vendor": st.column_config.TextColumn(width=150), "ISO 9001 claimed": st.column_config.TextColumn("ISO claimed", width=95),
-                                    "Burst report claimed": st.column_config.TextColumn("Burst claimed", width=105), "Gate": st.column_config.TextColumn(width=60)})
+                                    "Burst report claimed": st.column_config.TextColumn("Burst claimed", width=105), "Quality check": st.column_config.TextColumn("Check", width=60)})
 
         with st.expander("Inspect any price: where it came from"):
             ic1, ic2 = st.columns(2)
-            pick = ic1.selectbox("Line", [f"{it['id']}. {it['desc']}" for it in items])
+            pick = ic1.selectbox("Item", [f"{it['id']}. {it['desc']}" for it in items])
             vsel = ic2.selectbox("Vendor", vend, format_func=short)
             c = cells[vsel][int(pick.split(".")[0])]
-            st.write(f"Status: {c['status']}")
+            st.write(f"Status: {STATUS_NAMES.get(c['status'], c['status'])}")
             if c["raw"]:
                 st.write(f"As quoted: {c['raw']}")
-                st.write(f"Calculation: {c['receipt']}")
+                st.write(f"How it was worked out: {c['receipt']}")
             if c["source"]:
                 st.write(f"Source: {c['source'].get('ref')}")
                 st.code(c["source"].get("snippet") or "", language=None)
                 show_crop(vsel, c)
             for f in c["flags"]:
-                st.write(f"Flag {f['type']}: {f['message']}")
+                st.write(f"To check ({FLAG_NAMES.get(f['type'], f['type'])}): {f['message']}")
 
         st.subheader("Ask about the comparison")
-        qs = {"Missing lines": "Which vendors did not quote all lines, and which lines are missing?",
-              "Cheapest per line (chart)": "Who is cheapest per line? Show it as a chart.",
-              "Freight with no number": "Which quotes have freight or other charges we have no number for?",
-              "Split award and saving": "If we split the award to the cheapest vendor per line, but only among vendors who passed the quality questions, what is the total and the saving versus last year?",
-              "What is unresolved?": "What is still unresolved, and could any of it change the award?"}
+        qs = {"Missing items": "Which vendors did not quote all items, and which items are missing?",
+              "Cheapest per item (chart)": "Who is cheapest per item? Show it as a chart.",
+              "Unknown delivery costs": "Which quotes have delivery (freight) or other charges we have no number for?",
+              "Who gets the order + saving": "If each item goes to the cheapest vendor that passed the quality check, who gets the order, what is the total, and what is the saving versus last year?",
+              "What is unresolved?": "What is still unresolved, and could any of it change who gets the order?"}
         picked = st.pills("Suggested questions", list(qs), key=f"sugg{len(S.turns)}", help="Click to ask. Hover a finished answer's question to see it in full.")
         with st.form("ask_form", clear_on_submit=True, border=False):
             fc1, fc2 = st.columns([6, 1], vertical_alignment="bottom")
@@ -386,14 +444,17 @@ with t3:
             for t in shown[a:b]:
                 with st.container(border=True):
                     st.markdown(f"**Q{t['n']}. {t['q']}**")
-                    st.caption(f"{t['at']} · answered by {t['model'] or 'no model (failed)'} · every number comes from the tools listed under 'Show calculation'")
+                    st.caption(f"{t['at']} · answered by {t['model'] or 'no model (failed)'} · every number is calculated; see 'How this was worked out'")
                     st.markdown(t["a"])
                     for k, tr in enumerate(t["trace"]):
                         res = tr["result"]
                         if isinstance(res.get("table"), list) and res["table"]:
-                            with st.expander(f"Table: {tr['tool'].replace('_', ' ')} ({len(res['table'])} rows)"):
-                                st.dataframe(pd.DataFrame(res["table"]), hide_index=True, width="stretch")
-                                st.download_button("Export CSV", pd.DataFrame(res["table"]).to_csv(index=False),
+                            with st.expander(f"Table: {TOOL_NAMES.get(tr['tool'], tr['tool'])} ({len(res['table'])} rows)"):
+                                ptab = plain_table(res["table"])
+                                st.dataframe(ptab, hide_index=True, width="stretch",
+                                             column_config={c: st.column_config.NumberColumn(format="localized") for c in ptab.columns
+                                                            if pd.api.types.is_numeric_dtype(ptab[c]) and c != "Item no."})
+                                st.download_button("Download as spreadsheet (CSV)", plain_table(res["table"]).to_csv(index=False),
                                                    file_name=f"Q{t['n']}_{tr['tool']}.csv", key=f"dl{t['n']}_{k}")
                         if res.get("chart") and res["chart"].get("data"):
                             cdf = pd.DataFrame(res["chart"]["data"])
@@ -404,11 +465,13 @@ with t3:
                             st.caption(title)
                             st.bar_chart(cdf.set_index("label"), horizontal=True, height=60 + 40 * len(cdf), color="#7f39ff")
                     if t["trace"]:
-                        with st.expander("Show calculation"):
+                        with st.expander("How this was worked out"):
                             for tr in t["trace"]:
-                                st.markdown(f"**{tr['tool']}** `{tr['args']}`")
+                                st.markdown(f"**{TOOL_NAMES.get(tr['tool'], tr['tool'])}**" + (f" ({plain_args(tr['args'])})" if plain_args(tr['args']) else ""))
                                 st.write(tr["result"].get("calculation", ""))
                                 for cv in tr["result"].get("caveats", []):
+                                    for v in docs:
+                                        cv = cv.replace(v, short(v))
                                     st.write(f"- {cv}")
 
 # ---------------------------------------------------------------- tab 4
@@ -418,15 +481,15 @@ with t4:
     else:
         fl = all_open_flags(cells, vflags)
         if not fl:
-            st.success("No open flags. Every price in the comparison is confirmed, converted or marked not quoted.")
+            st.success("Nothing left to check. Every price is confirmed, converted or marked not quoted.")
         else:
-            st.write(f"**{len(fl)} open flags.** Resolving one recalculates the comparison and the analyst's answers.")
+            st.write(f"**{len(fl)} things to check.** Each decision you make updates the comparison and the AI's answers.")
             reset = lambda: S.update(flag_page=1)
             counts = {}
             for f in fl:
                 counts[f["type"]] = counts.get(f["type"], 0) + 1
             type_opts = {f"{FLAG_NAMES.get(k, k)} ({c})": k for k, c in sorted(counts.items(), key=lambda kv: -kv[1])}
-            pick_types = st.pills("Flag type", list(type_opts), selection_mode="multi", key="flag_types", on_change=reset,
+            pick_types = st.pills("Type", list(type_opts), selection_mode="multi", key="flag_types", on_change=reset,
                                   help="Pick one or more types. None selected shows all.")
             vcounts = {}
             for f in fl:
@@ -437,12 +500,12 @@ with t4:
             want_v = vopts.get(pick_v)
             shown = [f for f in fl if (not want_types or f["type"] in want_types) and (not want_v or f["vendor"] == want_v)]
             if not shown:
-                st.caption("No open flags match these filters.")
+                st.caption("Nothing to check matches these filters.")
             a, b = pager(len(shown), 10, "flag_page")
             for f in shown[a:b]:
                 k = f["key"]
                 with st.container(border=True):
-                    where = f"line {f['item_id']}. {next((it['desc'] for it in items if it['id'] == f['item_id']), '')}" if f["item_id"] else "whole quote"
+                    where = f"item {f['item_id']}. {next((it['desc'] for it in items if it['id'] == f['item_id']), '')}" if f["item_id"] else "whole quote"
                     st.markdown(f"**{FLAG_NAMES.get(f['type'], f['type'])}** · {short(f['vendor'])} · {where}")
                     st.write(f["message"])
                     if f["item_id"]:
@@ -453,16 +516,16 @@ with t4:
                     b1, b2 = st.columns(2)
                     if f["type"] in ("LOW_CONFIDENCE", "UNIT_MISMATCH", "CURRENCY_UNKNOWN", "BASELINE_ASSUMED", "UNREADABLE_PRICE") and f["item_id"]:
                         c = cells[f["vendor"]][f["item_id"]]
-                        val = b2.number_input("Enter the correct Rs price per RFx unit", value=c["display_price"], min_value=0.0, step=0.5,
+                        val = b2.number_input("Or type the correct price (Rs, per unit asked for)", value=c["display_price"], min_value=0.0, step=0.5,
                                               placeholder="Type the price you read", key=f"v_{k}")
                         if b2.button("Use my value", key=f"e_{k}", disabled=not val):
                             S.resolutions[k] = dict(action="edit", price=val); st.rerun()
                     if f["type"] == "UNMATCHED_LINE":
-                        target = b2.selectbox("It belongs to", [f"{it['id']}. {it['desc']}" for it in items], key=f"m_{k}")
-                        if b2.button("Match to this line", key=f"mb_{k}"):
+                        target = b2.selectbox("Which item is it?", [f"{it['id']}. {it['desc']}" for it in items], key=f"m_{k}")
+                        if b2.button("Match to this item", key=f"mb_{k}"):
                             S.resolutions[k] = dict(action="map", item_id=int(target.split(".")[0])); st.rerun()
                     if f["type"] != "UNREADABLE_PRICE":
                         label = ("Leave it out" if f["type"] == "UNMATCHED_LINE" else "Accept the claim" if f["type"] == "EVIDENCE_MISSING"
-                                 else "Confirm as shown" if f["item_id"] else "Accept")
+                                 else "Looks right" if f["item_id"] else "Accept")
                         if b1.button(label, key=f"a_{k}"):
                             S.resolutions[k] = dict(action="accept"); st.rerun()

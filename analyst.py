@@ -2,17 +2,21 @@
 import os
 from normalize import vendor_eligibility, summarise, all_open_flags, EVIDENCE_FLAGS
 
-SYSTEM = """You are a procurement analyst helping a category buyer award a contract.
+SYSTEM = """You are a procurement analyst helping a buyer decide which vendor gets the order for each item.
 Rules:
 - Every number in your answer must come from a tool result. Never calculate totals, savings or averages yourself.
-- Call the tools you need, then write a short answer: lead with the result, then a one-line 'Calculation' (which tool, which filter) and 'Caveats' (flags that excluded data, unquoted lines, unconfirmed values).
+- Call the tools you need, then write a short answer: lead with the result, then a one-line 'How it was worked out' and a 'Watch out for' line
+  (things to check that left data out, items not quoted, unconfirmed values).
+- Write for a busy buyer in plain words. Never show tool or function names, field names, code or JSON. Say 'who gets the order (split award)'
+  rather than just 'award', 'quality check' rather than 'quality gate', 'item' rather than 'line', 'things to check' rather than 'flags',
+  'delivery (freight)' rather than 'freight' alone. Use the vendors' everyday names (e.g. 'Deccan Corrugators', not 'DECCAN CORRUGATORS PVT. LTD.').
 - If a tool result says lines were excluded or blocked, say so plainly. Never fill a gap with an estimate.
 - If a question cannot be answered from the data, say what is missing.
-- Answer every part of the question. If it asks whether something should change the decision, weigh the quality gate and open flags, then say yes or no and why.
+- Answer every part of the question. If it asks whether something should change the decision, weigh the quality check and the things to check, then say yes or no and why.
 - Amounts are in INR. Use lakh/crore formatting for large amounts (Rs 38.4 lakh).
 - Keep answers concise. The interface already shows the tables and charts from the tool results: never draw charts or long tables in text.
-- A line 'assumed from last year' was NOT quoted by the vendor. Never count it as quoted.
-- A quality claim with no attached certificate or report is a claim, not evidence. Say so when it matters to the award."""
+- An item 'assumed from last year' (not re-quoted) was NOT quoted by the vendor. Never count it as quoted.
+- A quality claim with no attached certificate or report is a claim, not evidence. Say so when it matters to who gets the order."""
 
 
 def make_tools(docs, items, cells, vflags, last_year, trace):
@@ -41,18 +45,18 @@ def make_tools(docs, items, cells, vflags, last_year, trace):
         notes = []
         for v in vendors:
             if only_eligible and not elig[v]:
-                notes.append(f"{v}: excluded by quality gate ({vendor_eligibility(docs[v])[1]}).")
+                notes.append(f"{v}: left out because it fails the quality check ({vendor_eligibility(docs[v])[1]}).")
                 continue
             blocked = [i for i in cells[v] if cells[v][i]["status"] in ("blocked", "assumed") and price_of(v, i, include_low) is None]
             unreadable = [i for i in blocked if cells[v][i].get("unreadable")]
             blocked = [i for i in blocked if i not in unreadable]
             if unreadable:
-                notes.append(f"{v}: price unreadable in the source for item(s) {', '.join(map(str, unreadable))}; no value exists to test, the buyer must enter it.")
+                notes.append(f"{v}: price unreadable in the source for item(s) {', '.join(map(str, unreadable))}; there is no number to use until the buyer types it in.")
             if blocked:
-                notes.append(f"{v}: {len(blocked)} line(s) unusable until flags are resolved (items {', '.join(map(str, blocked[:8]))}{'...' if len(blocked) > 8 else ''}).")
+                notes.append(f"{v}: {len(blocked)} item(s) not usable until the buyer decides the things to check (items {', '.join(map(str, blocked[:8]))}{'...' if len(blocked) > 8 else ''}).")
             nq = [i for i in cells[v] if cells[v][i]["status"] == "not_quoted"]
             if nq:
-                notes.append(f"{v}: did not quote {len(nq)} line(s) (items {', '.join(map(str, nq[:8]))}{'...' if len(nq) > 8 else ''}).")
+                notes.append(f"{v}: did not quote {len(nq)} item(s) (items {', '.join(map(str, nq[:8]))}{'...' if len(nq) > 8 else ''}).")
         return notes
 
     def vendor_overview() -> dict:
@@ -66,8 +70,8 @@ def make_tools(docs, items, cells, vflags, last_year, trace):
                       assumed_from_last_year_items=[i for i, c in cells[r["vendor"]].items() if c["receipt"].startswith("Assumed")],
                       not_quoted_items=[i for i, c in cells[r["vendor"]].items() if c["status"] == "not_quoted"],
                       unusable_items=[i for i, c in cells[r["vendor"]].items() if c["status"] in ("blocked", "assumed")]) for r in rows]
-        return log("vendor_overview", {}, dict(table=table, calculation="Counts of usable cells per vendor; total = sum(quantity x price) over usable lines only.",
-                                              caveats=["Totals cover usable lines only and are not comparable between vendors with different coverage."]))
+        return log("vendor_overview", {}, dict(table=table, calculation="Items with a usable price, per vendor; total = yearly quantity × price, added up over those items only.",
+                                              caveats=["Totals only cover items with a usable price, so vendors with different coverage are not directly comparable."]))
 
     def lowest_price_per_item(only_eligible: bool = False, include_low_confidence: bool = False) -> dict:
         """Cheapest usable price for each RFx line, with the winning vendor and the runner-up. Set only_eligible true to restrict to vendors who passed the quality gate."""
@@ -86,8 +90,8 @@ def make_tools(docs, items, cells, vflags, last_year, trace):
                 wins[r["best_vendor"]] = wins.get(r["best_vendor"], 0) + 1
         chart = [dict(label=k, value=v) for k, v in wins.items()]
         return log("lowest_price_per_item", dict(only_eligible=only_eligible, include_low_confidence=include_low_confidence),
-                   dict(table=rows, chart=dict(title="Lines won per vendor", data=chart),
-                        calculation=f"For each line, the minimum usable price across {'quality-gate-passing' if only_eligible else 'all'} vendors.",
+                   dict(table=rows, chart=dict(title="Items won per vendor", data=chart),
+                        calculation=f"For each item, the lowest usable price among {'vendors that passed the quality check' if only_eligible else 'all vendors'}.",
                         caveats=excluded_notes(only_eligible, include_low_confidence)))
 
     def split_award(only_eligible: bool = True, include_low_confidence: bool = False) -> dict:
@@ -115,11 +119,11 @@ def make_tools(docs, items, cells, vflags, last_year, trace):
                    single_award_totals_inr=singles,
                    best_single_award_saving_inr=(round(min(singles.values()) - total) if singles else None),
                    lines_with_no_usable_price=uncovered,
-                   chart=dict(title="Award value by vendor (INR)", data=[dict(label=k, value=round(v)) for k, v in by_vendor.items()]),
-                   calculation=f"Per line: min usable price among {'quality-gate-passing' if only_eligible else 'all'} vendors x annual quantity; summed. "
-                               f"Last-year cost uses last year's rate x same quantity for the awarded lines.",
+                   chart=dict(title="Order value per vendor (INR)", data=[dict(label=k, value=round(v)) for k, v in by_vendor.items()]),
+                   calculation=f"Each item goes to the cheapest usable price among {'vendors that passed the quality check' if only_eligible else 'all vendors'}; "
+                               f"cost = price × yearly quantity, added up. Last year's cost uses last year's price × the same quantity.",
                    caveats=excluded_notes(only_eligible, include_low_confidence) +
-                           ([f"{len(uncovered)} line(s) have no usable price and are left out of the total."] if uncovered else []) +
+                           ([f"{len(uncovered)} item(s) have no usable price and are left out of the total."] if uncovered else []) +
                            [f"{v}: {f['message']}" for v in by_vendor for f in vflags[v] if f["type"] in EVIDENCE_FLAGS and not f["resolved"]])
         return log("split_award", dict(only_eligible=only_eligible, include_low_confidence=include_low_confidence), res)
 
@@ -137,15 +141,15 @@ def make_tools(docs, items, cells, vflags, last_year, trace):
                                  diff_inr=(round(pa - pb, 2) if pa is not None and pb is not None else None),
                                  note_a=cells[a][i]["receipt"][:90], note_b=cells[b][i]["receipt"][:90]))
         return log("compare_vendors", dict(vendor_a=a, vendor_b=b, item_filter=item_filter),
-                   dict(table=rows, calculation="Normalised INR price per RFx unit for each vendor; diff = first minus second.",
-                        caveats=["Blank means not quoted or unresolved flag; see note columns."]))
+                   dict(table=rows, calculation="Each vendor's price in Rs per requested unit; difference = first vendor minus second.",
+                        caveats=["Blank means not quoted, or waiting on a decision in 'things to check'; see the note columns."]))
 
     def open_flags(vendor: str = "") -> dict:
         """List unresolved flags (unit mismatches, low-confidence readings, unconfirmed baselines, discounts awaiting acceptance, freight with no amount). Optionally filter by vendor."""
         v = find_vendor(vendor) if vendor else None
         fl = [f for f in all_open_flags(cells, vflags) if not v or f["vendor"] == v]
         table = [dict(vendor=f["vendor"], item_id=f["item_id"] or None, flag=f["type"], message=f["message"]) for f in fl]
-        return log("open_flags", dict(vendor=vendor), dict(table=table, count=len(table), calculation="All flags not yet accepted or resolved by the buyer.", caveats=[]))
+        return log("open_flags", dict(vendor=vendor), dict(table=table, count=len(table), calculation="Everything the buyer has not yet decided.", caveats=[]))
 
     def vendor_terms() -> dict:
         """Commercial terms and questionnaire answers per vendor (freight, payment, validity, GST, lead time, ISO, burst report, FSC, 60-day payment),
@@ -158,7 +162,7 @@ def make_tools(docs, items, cells, vflags, last_year, trace):
                               iso_9001=q["iso_9001"], burst_report=q["burst_report"], fsc=q["fsc"], accepts_60_day=q["accepts_60_day_payment"],
                               iso_evidence=d.get("_evidence", {}).get("iso"), burst_evidence=d.get("_evidence", {}).get("burst"),
                               attached_documents=d.get("_evidence", {}).get("files")))
-        return log("vendor_terms", {}, dict(table=table, calculation="Terms and questionnaire answers as extracted, with source text kept in the grid inspector.",
+        return log("vendor_terms", {}, dict(table=table, calculation="Terms and quality answers as the vendors wrote them, plus what their attached documents prove.",
                                             caveats=["'Not stated' means the vendor did not say, not that the answer is No."]))
 
     return [vendor_overview, lowest_price_per_item, split_award, compare_vendors, open_flags, vendor_terms]

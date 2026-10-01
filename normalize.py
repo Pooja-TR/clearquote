@@ -108,11 +108,11 @@ def attach_evidence(docs, supports, resolutions, today=None):
                     iso += " (expires during contract)"
                 if until and until < today + dt.timedelta(days=REQUIRE["contract_days"]):
                     flags.append(_flag(v, 0, "CERT_EXPIRING", "decision",
-                                       f"ISO 9001 certificate expires on {until:%d %b %Y}, inside the 12-month contract ({c['_file']}). Ask for the renewal.", resolutions))
+                                       f"ISO 9001 certificate expires on {until:%d %b %Y}, during the 12-month contract ({c['_file']}). Ask for the renewed certificate.", resolutions))
         elif q["iso_9001"] == "Yes":
             iso_ok, iso = True, "claimed, no certificate"
             flags.append(_flag(v, 0, "EVIDENCE_MISSING", "decision",
-                               "Says ISO 9001 certified, but no certificate was attached and the RFx asked for one. Accept the claim or request the certificate.",
+                               "Says ISO 9001 certified, but attached no certificate, which the request asked for. Accept their word, or ask for the certificate.",
                                resolutions, key_suffix="#iso"))
         else:
             iso_ok, iso = False, f"not certified ({q['iso_9001']})"
@@ -125,14 +125,14 @@ def attach_evidence(docs, supports, resolutions, today=None):
             burst_ok, burst = passed, f"report: {figure}, {'pass' if passed else 'FAIL'}"
             if r.get("board_ply") not in (None, REQUIRE["burst_ply"]) or (r.get("bf") is not None and r["bf"] < REQUIRE["burst_bf"]):
                 flags.append(_flag(v, 0, "TEST_SCOPE", "decision",
-                                   f"The report tests '{r.get('sample_tested')}', not the 5-ply BF 22 board the RFx asked about ({r['_file']}).", resolutions))
+                                   f"The test report is for '{r.get('sample_tested')}', not the 5-ply BF 22 box the request asked about ({r['_file']}).", resolutions))
             rd = _date(r.get("report_date"))
             if rd and (today - rd).days > REQUIRE["report_max_age_days"]:
                 flags.append(_flag(v, 0, "REPORT_OLD", "decision", f"Burst report is dated {rd:%d %b %Y}, over a year old ({r['_file']}).", resolutions))
         elif q["burst_report"] == "Yes":
             burst_ok, burst = True, "claimed, no report file"
             flags.append(_flag(v, 0, "EVIDENCE_MISSING", "decision",
-                               "Says the burst test report is provided, but no report file was received. Accept the claim or request the report.",
+                               "Says the burst test report is provided, but no report file was received. Accept their word, or ask for the report.",
                                resolutions, key_suffix="#burst"))
         else:
             burst_ok, burst = False, f"not provided ({q['burst_report']})"
@@ -165,20 +165,20 @@ def vendor_flags(v, doc, resolutions):
     out = list(doc.get("_evidence", {}).get("flags", []))
     for d in doc.get("discounts", []):
         out.append(_flag(v, 0, "DISCOUNT_FOUND", "decision",
-                         f"{d['percent']}% discount found ({d['source_ref']}): \"{_clip(d['source_snippet'], 300)}\". Not applied until you accept it.", resolutions))
+                         f"{d['percent']:g}% discount offered ({d['source_ref']}): \"{_clip(d['source_snippet'], 300)}\". Not applied until you accept it.", resolutions))
         break
     for j, l in enumerate(doc["lines"]):
         if l.get("rfx_item_id") is None:
             price = f"{l.get('currency') or ''} {l['price']:g} {l.get('price_unit') or ''}".strip() if l.get("price") is not None else "an unreadable price"
             out.append(_flag(v, 0, "UNMATCHED_LINE", "decision",
-                             f"Vendor quoted \"{l['vendor_description']}\" at {price} ({l['source_ref']}), but it was not matched to an RFx line. "
-                             "Pick the line it belongs to, or leave it out.", resolutions, key_suffix=f"#{j}"))
+                             f"Vendor quoted \"{l['vendor_description']}\" at {price} ({l['source_ref']}), but the AI could not tell which requested item it is. "
+                             "Pick the item, or leave it out.", resolutions, key_suffix=f"#{j}"))
     t = doc.get("terms", {})
     if t.get("freight") and not t.get("freight_included") and not t.get("freight_amount_stated"):
         out.append(_flag(v, 0, "AMBIGUOUS_TERM", "decision",
-                         f"Freight is extra but no amount is given (\"{_clip(t['freight'], 300)}\"). Landed cost is not known.", resolutions))
+                         f"Delivery (freight) is charged extra, but no amount is given (\"{_clip(t['freight'], 300)}\"). The true delivered cost is not known.", resolutions))
     elif t.get("freight") is None:
-        out.append(_flag(v, 0, "AMBIGUOUS_TERM", "decision", "Freight terms not stated.", resolutions))
+        out.append(_flag(v, 0, "AMBIGUOUS_TERM", "decision", "The quote doesn't say who pays for delivery (freight).", resolutions))
     return out
 
 
@@ -218,7 +218,7 @@ def _cell(v, doc, it, fx, last_year, resolutions, disc_pct):
         l = max(matched, key=lambda x: x.get("confidence", 0))
         cell["source"] = dict(ref=l["source_ref"], snippet=l["source_snippet"], box=l.get("box_2d"), desc=l["vendor_description"])
         f = _flag(v, i, "UNREADABLE_PRICE", "blocking",
-                  "Vendor quoted this line but the price could not be read. Check the source and enter the value.", resolutions)
+                  "The vendor quoted this item, but the price can't be read. Look at the source and type the price.", resolutions)
         cell["flags"] = [f]
         cell["status"] = "blocked"
         cell["unreadable"] = True
@@ -234,7 +234,7 @@ def _cell(v, doc, it, fx, last_year, resolutions, disc_pct):
         ly = last_year.get(i)
         if doc.get("baseline_reference") and ly is not None:
             f = _flag(v, i, "BASELINE_ASSUMED", "blocking",
-                      f"Vendor said some rates are 'same as last year'. Last year's rate is Rs {ly:g}. Confirm before using.", resolutions)
+                      f"Not re-quoted: the vendor said 'same as last year'. Last year's price was Rs {ly:g}. Confirm it still applies before it counts.", resolutions)
             cell["flags"].append(f)
             cell["display_price"] = ly
             cell["status"] = "assumed"
@@ -244,7 +244,7 @@ def _cell(v, doc, it, fx, last_year, resolutions, disc_pct):
                 cell["price"] = ly * (1 - disc_pct / 100)
                 cell["status"] = "ok"
         else:
-            cell["flags"].append(_flag(v, i, "MISSING_ITEM", "info", "Vendor did not quote this line.", resolutions))
+            cell["flags"].append(_flag(v, i, "MISSING_ITEM", "info", "The vendor did not quote this item.", resolutions))
         return cell
 
     l = max(lines, key=lambda x: x.get("confidence", 0))
@@ -258,7 +258,7 @@ def _cell(v, doc, it, fx, last_year, resolutions, disc_pct):
     if cur == "USD":
         value *= fx
         receipts.append(f"USD {l['price']:g} x {fx:g} = Rs {value:.2f}")
-        flags.append(_flag(v, i, "CURRENCY_CONVERTED", "info", f"Quoted in USD, converted at {fx:g}.", resolutions))
+        flags.append(_flag(v, i, "CURRENCY_CONVERTED", "info", f"Quoted in US dollars, converted at Rs {fx:g} per dollar.", resolutions))
     elif cur != "INR":
         value = None
         flags.append(_flag(v, i, "CURRENCY_UNKNOWN", "blocking", f"Currency '{cur}' cannot be converted.", resolutions))
@@ -267,21 +267,23 @@ def _cell(v, doc, it, fx, last_year, resolutions, disc_pct):
     rcls = rfx_unit_class(it["unit"])
     if ucls is None or ucls != rcls or mult != 1:
         f = _flag(v, i, "UNIT_MISMATCH", "blocking",
-                  f"Quoted '{l.get('price_unit') or 'no unit'}' but the RFx unit is '{it['unit']}'. Confirm 1 {it['unit']} = 1 unit quoted"
-                  + (f" ({mult} pcs per price)" if mult != 1 else "") + ".", resolutions)
+                  (f"Price is per '{l.get('price_unit')}', but the request asks for a price per {it['unit']}. "
+                   + (f"The app divided by {mult}; confirm that 1 {it['unit']} = 1 piece." if (ucls == rcls and mult > 1)
+                      else "Confirm how to convert it before it counts.")) if l.get("price_unit") else
+                  f"No unit given with the price; the request asks for a price per {it['unit']}. Confirm before it counts.", resolutions)
         flags.append(f)
         if value is not None and ucls == rcls and mult > 1:
             value = value / mult
-            receipts.append(f"per {mult} -> per 1: / {mult}")
+            receipts.append(f"price for {mult} ÷ {mult} = Rs {value:.2f} each")
         elif ucls != rcls:
             value = None if not f["resolved"] else value
 
     if l.get("confidence", 1) < THRESH:
         flags.append(_flag(v, i, "LOW_CONFIDENCE", "blocking",
-                           f"Reading confidence {l.get('confidence', 0):.0%}. Check the source before relying on it.", resolutions))
+                           f"The AI is only {l.get('confidence', 0):.0%} sure it read this correctly. Check the source before relying on it.", resolutions))
     if l.get("applicability_uncertain"):
         flags.append(_flag(v, i, "AMBIGUOUS_APPLICABILITY", "blocking",
-                           "The vendor's rate could apply to more than one line. Confirm it applies here.", resolutions))
+                           "The vendor's rate could apply to more than one item (for example sheets and rolls). Confirm it applies to this one.", resolutions))
 
     edit = next((f["resolution"] for f in flags if f["resolved"] and f["resolution"].get("action") == "edit"), None)
     if edit:
