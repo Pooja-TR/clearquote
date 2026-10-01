@@ -516,7 +516,7 @@ with t4:
                     b1, b2 = st.columns(2)
                     if f["type"] in ("LOW_CONFIDENCE", "UNIT_MISMATCH", "CURRENCY_UNKNOWN", "BASELINE_ASSUMED", "UNREADABLE_PRICE") and f["item_id"]:
                         c = cells[f["vendor"]][f["item_id"]]
-                        val = b2.number_input("Or type the correct price (Rs, per unit asked for)", value=c["display_price"], min_value=0.0, step=0.5,
+                        val = b2.number_input("Or type the correct price (Rs, per unit asked for)", value=(None if c["display_price"] is None else float(c["display_price"])), min_value=0.0, step=0.5,
                                               placeholder="Type the price you read", key=f"v_{k}")
                         if b2.button("Use my value", key=f"e_{k}", disabled=not val):
                             S.resolutions[k] = dict(action="edit", price=val); st.rerun()
