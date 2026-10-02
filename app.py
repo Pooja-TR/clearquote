@@ -39,7 +39,7 @@ HERE = os.path.dirname(__file__)
 SAMPLE = os.path.join(HERE, "sample_data")
 MAX_AI_CALLS = 120
 
-st.set_page_config(page_title="Quote comparison", page_icon="📦", layout="wide")
+st.set_page_config(page_title="ClearQuote", page_icon="📦", layout="wide")
 S = st.session_state
 for k, v in dict(rfx=[], files={}, docs={}, supp_files={}, supports={}, resolutions={}, turns=[], last_year={}, ai_calls=0, outbox=[],
               log=[], fx_prev=85.0).items():
@@ -727,6 +727,6 @@ with header_slot:
                  + (f'<b>{nopen}</b> things to check' if nopen else 'nothing left to check') + '</div>')
     else:
         right = '<div class="meta">The comparison appears once replies are read.</div>'
-    st.markdown(f'''<div class="rec"><div class="left"><div class="eyebrow">Kill the quote spreadsheet</div>
+    st.markdown(f'''<div class="rec"><div class="left"><div class="eyebrow">ClearQuote <span style='font-weight:400;text-transform:none;letter-spacing:0'>· my take on Kill the Quote Spreadsheet</span></div>
 <div class="title">{title}</div><div class="meta">{" · ".join(m for m in meta if m)}</div></div><div class="right">{right}</div></div>''',
                 unsafe_allow_html=True)

@@ -1,4 +1,4 @@
-# Kill the quote spreadsheet: prototype
+# ClearQuote: my take on "Kill the Quote Spreadsheet"
 
 Reads messy vendor quotes (Excel, PDF, Word, photo, email) with Gemini, normalises them with plain code,
 and lets a buyer interrogate the comparison in plain language.

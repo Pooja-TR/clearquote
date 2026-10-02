@@ -17,7 +17,7 @@ def build(docs, items, cells, vflags, last_year, fx, log, turns, who, generated_
     desc = {it["id"]: it["desc"] for it in items}
 
     # Summary
-    summary = [("Who gets the order (split award)", ""),
+    summary = [("ClearQuote award pack: who gets the order (split award)", ""),
                ("Prepared by", who), ("Generated", generated_at), ("Dollar to rupee rate used", fx),
                ("", ""),
                ("Total yearly cost (Rs)", split["total_inr"]),
