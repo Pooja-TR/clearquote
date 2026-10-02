@@ -727,6 +727,6 @@ with header_slot:
                  + (f'<b>{nopen}</b> things to check' if nopen else 'nothing left to check') + '</div>')
     else:
         right = '<div class="meta">The comparison appears once replies are read.</div>'
-    st.markdown(f'''<div class="rec"><div class="left"><div class="eyebrow">ClearQuote <span style='font-weight:400;text-transform:none;letter-spacing:0'>· my take on Kill the Quote Spreadsheet</span></div>
+    st.markdown(f'''<div class="rec"><div class="left"><div class="eyebrow">ClearQuote <span style='font-weight:400;text-transform:none;letter-spacing:0'>· every vendor quote, made comparable</span></div>
 <div class="title">{title}</div><div class="meta">{" · ".join(m for m in meta if m)}</div></div><div class="right">{right}</div></div>''',
                 unsafe_allow_html=True)
