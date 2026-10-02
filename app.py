@@ -230,6 +230,12 @@ with st.sidebar:
     with st.expander("Technical details"):
         st.caption(f"AI assistant: Google Gemini. Main model {extract.MODEL}; if it is busy or out of free quota, a backup model answers. "
                    "Each file and answer shows which model was used.")
+        try:
+            import subprocess
+            ver = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=HERE, capture_output=True, text=True, timeout=5).stdout.strip()
+        except Exception:
+            ver = ""
+        st.caption(f"Version: {ver or 'unknown'}")
 
 # Visual polish only: colours come from .streamlit/config.toml; this adds the record header, cards and tab styling.
 st.markdown("""<style>
