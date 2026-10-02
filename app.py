@@ -109,6 +109,20 @@ def plain_table(rows):
     return df.map(lambda x: short(x) if isinstance(x, str) and x in docs else x)
 
 
+def friendly_error(e):
+    """AI failures in plain words. Free-tier limits are expected, so say what still works and when the AI is back."""
+    msg = str(e)
+    if any(k in msg for k in ("RESOURCE_EXHAUSTED", "429", "quota")):
+        return ("Today's free AI allowance is used up (this demo runs on Gemini's free tier). Everything already read still works: "
+                "the comparison, things to check, decisions and the award pack. Reading new files and answering questions comes back "
+                "after midnight US Pacific time (early afternoon in India).")
+    if any(k in msg for k in ("503", "UNAVAILABLE", "overloaded", "high demand")):
+        return "Google's AI is busy right now. Wait a minute and try again; everything already read still works."
+    if "GEMINI_API_KEY" in msg:
+        return "The AI key is not set up on this server, so new files and questions can't be read. Everything already read still works."
+    return f"The AI step failed: {msg[:200]}"
+
+
 def plain_args(args):
     """Tool settings in words, for 'How this was worked out'."""
     out = []
@@ -279,7 +293,7 @@ with t1:
                     S.rfq = dict(no="Draft", title="New request (drafted with AI)", site="")
                     S.draft_extra = d
                 except Exception as e:
-                    st.error(f"Draft failed: {e}")
+                    st.error(f"Could not draft the request. {friendly_error(e)}")
     if S.rfx:
         with st.container(border=True):
             section(f"Items in this request ({len(S.rfx)})", "Edit anything before it goes out. Every item states the unit vendors must price in.")
@@ -311,6 +325,8 @@ with t2:
         read = b2.button("Read replies with AI", type="primary", width="stretch", disabled=not S.files)
         with st.expander("Or upload your own files"):
             u1, u2 = st.columns(2)
+            st.caption("This demo runs on a free AI plan: each new file uses one AI request, and each question one to three. "
+                       "Try your own files; if the day's allowance runs out, the app says so and everything already read keeps working.")
             up = u1.file_uploader("Quotes", accept_multiple_files=True)
             sup_up = u2.file_uploader("Certificates and test reports", accept_multiple_files=True,
                                       help="Matched to vendors by the company name printed on each document. You can reassign any that do not match.")
@@ -325,7 +341,10 @@ with t2:
                                     "Read": any(d.get("_file") == n for d in S.docs.values()),
                                     "Read by": next((d.get("_model", "") for d in S.docs.values() if d.get("_file") == n), "")} for n, b in S.files.items()]),
                      hide_index=True, width="stretch")
+        for m in S.get("read_errors", []):  # kept in session: the page refreshes right after reading
+            st.error(m)
         if read:
+            S.read_errors = []
             if not S.rfx:
                 st.error("Create or load the request first (tab 1).")
             else:
@@ -342,7 +361,7 @@ with t2:
                             S.ai_calls += 1
                         S.supports[name] = extract.extract_support(name, data)
                     except Exception as e:
-                        st.error(f"{name}: {e}")
+                        S.read_errors.append(f"{name}: {friendly_error(e)}")
                 for n, name in enumerate(names):
                     if any(d.get("_file") == name for d in S.docs.values()):
                         continue
@@ -355,7 +374,7 @@ with t2:
                         doc = extract.extract_response(name, S.files[name], S.rfx)
                         S.docs[doc["vendor_name"]] = doc
                     except Exception as e:
-                        st.error(f"{name}: {e}")
+                        S.read_errors.append(f"{name}: {friendly_error(e)}")
                     bar.progress((n + 1) / len(names))
                 st.rerun()
     if S.supp_files:
@@ -531,7 +550,7 @@ with t_ask:
                         S.ai_calls += 1
                         ans, trace, model = ask(question, hist, docs, items, cells, vflags, S.last_year, S.log)
                     except Exception as e:
-                        ans, trace, model = f"The analyst call failed: {e}", [], None
+                        ans, trace, model = friendly_error(e), [], None
                 S.turns.append(dict(n=len(S.turns) + 1, q=question, a=ans, trace=trace, model=model,
                                     at=pd.Timestamp.now(tz="Asia/Kolkata").strftime("%H:%M IST")))
                 st.rerun()
