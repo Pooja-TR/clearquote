@@ -49,6 +49,9 @@ for k, v in dict(rfx=[], files={}, docs={}, supp_files={}, supports={}, resoluti
 def load_sample_rfx():
     from openpyxl import load_workbook
     ws = load_workbook(os.path.join(SAMPLE, "00_RFx_line_items_and_questionnaire.xlsx"))["Line items"]
+    parts = [x.strip() for x in str(ws["A1"].value or "").split("|")]
+    S.rfq = dict(no=parts[0].replace("RFQ No.", "").strip() if parts else "", title=parts[1] if len(parts) > 1 else "Sample request",
+                 site=parts[2] if len(parts) > 2 else "")
     S.rfx = [dict(id=r[0], desc=r[1], qty=r[2], unit=r[3]) for r in ws.iter_rows(min_row=4, values_only=True) if r[0]]
     ly = load_workbook(os.path.join(SAMPLE, "00_last_year_awarded_rates.xlsx")).active
     S.last_year = {r[0]: r[4] for r in ly.iter_rows(min_row=2, values_only=True) if r[0]}
@@ -214,39 +217,57 @@ with st.sidebar:
         st.caption(f"AI assistant: Google Gemini. Main model {extract.MODEL}; if it is busy or out of free quota, a backup model answers. "
                    "Each file and answer shows which model was used.")
 
-# Visual polish only: colours come from .streamlit/config.toml; this adds the header band, card shadows and tab styling.
+# Visual polish only: colours come from .streamlit/config.toml; this adds the record header, cards and tab styling.
 st.markdown("""<style>
-.hero {background: linear-gradient(110deg, #0e0d59 0%, #3d05c6 55%, #9937fb 100%); border-radius: 16px; padding: 26px 30px 22px;
-       margin: -8px 0 6px; color: #fff; box-shadow: 0 10px 30px rgba(61, 5, 198, .18);}
-.hero h1 {color: #fff; font-size: 2.0rem; font-weight: 700; margin: 0 0 4px; padding: 0; letter-spacing: -.02em;}
-.hero p {color: #d9d3ff; margin: 0; font-size: 1.0rem;}
-.hero .steps {margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap;}
-.hero .steps span {background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.22); border-radius: 999px; padding: 3px 12px;
-                   font-size: .82rem; color: #fff;}
-.hero .steps span b {color: #ffb37a; font-weight: 600; margin-right: 4px;}
-[data-testid="stTabs"] [role="tablist"] {gap: 8px; margin-top: 4px;}
-[data-testid="stTabs"] [role="tab"] {padding: 8px 16px; border-radius: 10px 10px 0 0; font-weight: 600; color: #4a4680;}
+.block-container {padding-top: 4.2rem;}
+.rec {background: #fff; border: 1px solid #dcd8f2; border-left: 5px solid #5a35cf; border-radius: 12px; padding: 14px 20px;
+      display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 4px;
+      box-shadow: 0 2px 10px rgba(28, 26, 74, .05);}
+.rec .eyebrow {font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: #6b6894; font-weight: 600;}
+.rec .title {font-size: 1.25rem; font-weight: 700; color: #1c1a4a; margin: 2px 0;}
+.rec .meta {font-size: .86rem; color: #5b5880;}
+.rec .meta b {color: #1c1a4a; font-weight: 600;}
+.rec .left {flex: 1; min-width: 0;} .rec .right {text-align: right; flex: none;}
+@media (max-width: 900px) {.rec {flex-wrap: wrap;} .rec .right {text-align: left;}}
+.rec .big {font-size: 1.5rem; font-weight: 700; color: #3d05c6; line-height: 1.2;}
+.badge {display: inline-block; font-size: .75rem; font-weight: 700; padding: 2px 10px; border-radius: 999px; margin-left: 8px; vertical-align: middle;}
+.badge.draft {background: #fff1e0; color: #b45309;} .badge.final {background: #e3f6ea; color: #11743b;}
+.sec {font-size: 1.05rem; font-weight: 700; color: #1c1a4a; margin: 0 0 2px;}
+.sub {font-size: .86rem; color: #6b6894; margin: 0 0 10px;}
+[data-testid="stTabs"] [role="tablist"] {gap: 6px; margin-top: 6px;}
+[data-testid="stTabs"] [role="tab"] {padding: 8px 14px; border-radius: 10px 10px 0 0; font-weight: 600; color: #4a4680;}
 [data-testid="stTabs"] [role="tab"][aria-selected="true"] {background: #ebe8fb; color: #3d05c6;}
 [data-testid="stTabs"] [role="tab"]:hover {color: #3d05c6;}
-[data-testid="stVerticalBlockBorderWrapper"] {background: #fff; box-shadow: 0 2px 10px rgba(28, 26, 74, .06);}
+[data-testid="stVerticalBlockBorderWrapper"] {background: #fff; box-shadow: 0 2px 10px rgba(28, 26, 74, .05);}
 [data-testid="stMetric"] {background: #fff; border: 1px solid #dcd8f2; border-radius: 12px; padding: 12px 16px;
                           box-shadow: 0 2px 10px rgba(28, 26, 74, .05);}
 [data-testid="stMetricValue"] {color: #3d05c6; font-weight: 700;}
 [data-testid="stDataFrame"] {background: #fff; border-radius: 10px;}
 .legend span {display: inline-block; padding: 2px 10px; border-radius: 6px; margin: 0 6px 4px 0; font-size: .82rem; border: 1px solid #dcd8f2;}
-</style>
-<div class="hero"><h1>Kill the quote spreadsheet</h1>
-<p>Messy vendor quotes in, one comparison you can defend. AI reads the quotes; every number is calculated, never guessed.</p>
-<div class="steps"><span><b>1</b>Ask for quotes</span><span><b>2</b>Read any reply</span><span><b>3</b>Compare and ask</span><span><b>4</b>Check what's unclear</span></div>
-</div>""", unsafe_allow_html=True)
-t1, t2, t3, t4, t5 = st.tabs(["1. Request for quotes", "2. Vendor replies", "3. Compare and ask", "4. Things to check", "5. Decision record"])
+</style>""", unsafe_allow_html=True)
+
+
+def section(title, sub=None):
+    st.markdown(f'<div class="sec">{title}</div>' + (f'<div class="sub">{sub}</div>' if sub else ""), unsafe_allow_html=True)
+
+
+header_slot = st.container()  # filled at the end, once the numbers are known
+t1, t2, t3, t_ask, t4, t5 = st.tabs(["1. Request for quotes", "2. Vendor replies", "3. Compare", "4. Ask the AI", "5. Things to check",
+                                     "6. Decision record"])
 
 # ---------------------------------------------------------------- tab 1
 with t1:
-    st.write("Describe what you need. The AI drafts the item list, quality questions and terms for your request (RFx). You review and edit.")
-    brief = st.text_area("What do you need to buy?", placeholder="30 corrugated packaging items for our Pune electronics plant: shipper boxes, mailers, sheets, pallet caps. 60-day payment.", height=90)
-    c1, c2 = st.columns(2)
-    if c1.button("Draft the request with AI") and brief:
+    with st.container(border=True):
+        section("What are you buying?", "Describe it in a sentence and the AI drafts the item list, quality questions and terms. "
+                                        "Or load the sample: 30 corrugated packaging items for a Pune electronics plant.")
+        brief = st.text_area("What do you need to buy?", label_visibility="collapsed", height=80,
+                             placeholder="e.g. 30 corrugated packaging items for our Pune plant: shipper boxes, mailers, sheets, pallet caps. 60-day payment.")
+        c1, c2, _ = st.columns([1.7, 1.5, 2.4])
+        load = c1.button("Load sample request (30 items)", type="primary", width="stretch")
+        draft = c2.button("Draft the request with AI", width="stretch", disabled=not brief)
+    if load:
+        load_sample_rfx(); st.rerun()
+    if draft and brief:
         if S.ai_calls >= MAX_AI_CALLS:
             st.error("AI call limit reached for this session.")
         else:
@@ -255,46 +276,56 @@ with t1:
                     S.ai_calls += 1
                     d = extract.draft_rfx(brief)
                     S.rfx = [dict(id=n, desc=i["description"], unit=i["unit"], qty=i["quantity"]) for n, i in enumerate(d["items"], 1)]
+                    S.rfq = dict(no="Draft", title="New request (drafted with AI)", site="")
                     S.draft_extra = d
                 except Exception as e:
                     st.error(f"Draft failed: {e}")
-    if c2.button("Load sample request (30 items)"):
-        load_sample_rfx(); st.rerun()
     if S.rfx:
-        df = st.data_editor(pd.DataFrame(S.rfx), num_rows="dynamic", width="stretch", hide_index=True, key="items_editor")
-        S.rfx = df.dropna(subset=["desc"]).to_dict("records")
-        for n, it in enumerate(S.rfx, 1):
-            it["id"] = n if not it.get("id") or pd.isna(it.get("id")) else int(it["id"])
-        if "draft_extra" in S:
-            with st.expander("Questionnaire and terms drafted"):
-                st.write(S.draft_extra["questionnaire"]); st.write(S.draft_extra["terms"])
-        if st.button("Send to vendors (simulated)"):
-            S.outbox = [f"To: vendor{n}@example.com\nSubject: RFQ\n\nPlease quote on the {len(S.rfx)} lines attached. State unit and currency per line." for n in range(1, 6)]
-        for m in S.outbox:
-            st.code(m, language=None)
+        with st.container(border=True):
+            section(f"Items in this request ({len(S.rfx)})", "Edit anything before it goes out. Every item states the unit vendors must price in.")
+            df = st.data_editor(pd.DataFrame(S.rfx), num_rows="dynamic", width="stretch", hide_index=True, key="items_editor",
+                                column_config={"id": st.column_config.NumberColumn("No.", width=60), "desc": st.column_config.TextColumn("Item", width="large"),
+                                               "qty": st.column_config.NumberColumn("Yearly quantity", format="localized"),
+                                               "unit": st.column_config.TextColumn("Price per (unit)")})
+            S.rfx = df.dropna(subset=["desc"]).to_dict("records")
+            for n, it in enumerate(S.rfx, 1):
+                it["id"] = n if not it.get("id") or pd.isna(it.get("id")) else int(it["id"])
+            if "draft_extra" in S:
+                with st.expander("Quality questions and terms drafted"):
+                    st.write(S.draft_extra["questionnaire"]); st.write(S.draft_extra["terms"])
+            if st.button("Send to vendors (simulated)"):
+                S.outbox = [f"To: vendor{n}@example.com\nSubject: RFQ\n\nPlease quote on the {len(S.rfx)} items attached. State unit and currency per item." for n in range(1, 6)]
+            for m in S.outbox:
+                st.code(m, language=None)
 
 # ---------------------------------------------------------------- tab 2
 with t2:
-    st.write("Vendors reply however they like. Drop in whatever arrives: Excel, PDF, Word, a photo, an email.")
-    up = st.file_uploader("Vendor replies (quotes)", accept_multiple_files=True)
-    for f in up or []:
-        S.files[f.name] = f.getvalue()
-    sup_up = st.file_uploader("Supporting documents: certificates, test reports", accept_multiple_files=True,
-                              help="Matched to vendors by the company name printed on each document. You can reassign any that do not match.")
-    for f in sup_up or []:
-        S.supp_files[f.name] = f.getvalue()
-    if st.button("Load the 5 sample replies"):
-        if not S.rfx:
-            load_sample_rfx()
-        load_sample_responses(); st.rerun()
-    st.caption("Samples include an Excel in its own layout, a PDF, a Word letter, an angled phone photo and a one-line email, "
-               "plus 5 attached ISO certificates and burst test reports.")
+    with st.container(border=True):
+        section("Vendor replies", "Vendors reply however they like: Excel, PDF, Word, a phone photo, an email. The AI reads each one and "
+                                  "notes where every price came from. The samples are 5 such replies plus 5 certificates and test reports.")
+        b1, b2, _ = st.columns([1.3, 1.3, 3])
+        if b1.button("Load the 5 sample replies", width="stretch"):
+            if not S.rfx:
+                load_sample_rfx()
+            load_sample_responses(); st.rerun()
+        read = b2.button("Read replies with AI", type="primary", width="stretch", disabled=not S.files)
+        with st.expander("Or upload your own files"):
+            u1, u2 = st.columns(2)
+            up = u1.file_uploader("Quotes", accept_multiple_files=True)
+            sup_up = u2.file_uploader("Certificates and test reports", accept_multiple_files=True,
+                                      help="Matched to vendors by the company name printed on each document. You can reassign any that do not match.")
+        for f in up or []:
+            S.files[f.name] = f.getvalue()
+        for f in sup_up or []:
+            S.supp_files[f.name] = f.getvalue()
     if S.files:
+      with st.container(border=True):
+        section(f"Quotes received ({len(S.files)})", "'Read by' shows which AI model read each file.")
         st.dataframe(pd.DataFrame([{"File": n, "Type": extract.kind_of(n), "Size": f"{len(b) / 1024:.1f} KB",
                                     "Read": any(d.get("_file") == n for d in S.docs.values()),
                                     "Read by": next((d.get("_model", "") for d in S.docs.values() if d.get("_file") == n), "")} for n, b in S.files.items()]),
                      hide_index=True, width="stretch")
-        if st.button("Read replies with AI", type="primary"):
+        if read:
             if not S.rfx:
                 st.error("Create or load the request first (tab 1).")
             else:
@@ -328,7 +359,8 @@ with t2:
                     bar.progress((n + 1) / len(names))
                 st.rerun()
     if S.supp_files:
-        st.markdown("**Supporting documents**")
+      with st.container(border=True):
+        section(f"Certificates and test reports ({len(S.supp_files)})", "Matched to vendors by the company name printed on each document.")
         _, unassigned = attach_evidence(S.docs, S.supports, S.resolutions) if S.docs else ({}, [])
         def owner(n):
             r = S.resolutions.get(f"support|{n}")
@@ -389,8 +421,10 @@ def show_crop(vendor, c):
 items = S.rfx
 docs = attach_evidence(S.docs, S.supports, S.resolutions)[0] if S.docs else {}
 cells = vflags = None
+split_now = None
 if docs and items:
     cells, vflags = build_cells(docs, items, fx, S.last_year, S.resolutions)
+    split_now = {f.__name__: f for f in make_tools(docs, items, cells, vflags, S.last_year, [])}["split_award"](only_eligible=True)
 
 # ---------------------------------------------------------------- tab 3
 with t3:
@@ -399,9 +433,8 @@ with t3:
     else:
         rows, ready = summarise(docs, items, cells, vflags)
         nopen = len(all_open_flags(cells, vflags))
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Comparison complete", f"{ready:.0%}")
-        m2.metric("Things to check", nopen, help="Decide them in tab 4. Prices waiting on a decision are left out of every total.")
+        m1, m3, m4 = st.columns(3)
+        m1.metric("Comparison complete", f"{ready:.0%}", help=f"{nopen} things to check (tab 5). Prices waiting on a decision are left out of every total.")
         m3.metric("Pass quality check", f"{sum(r['eligible'] for r in rows)} of {len(rows)}", help="ISO 9001 certified and a burst test report provided.")
         m4.metric("Prices ready to use", f"{sum(c['price'] is not None for v in docs for c in cells[v].values())} of {len(docs) * len(items)}",
                   help="One price per vendor per item. Only confirmed or converted prices count; the rest are left out of totals.")
@@ -425,30 +458,35 @@ with t3:
             s = {short(k): x for k, x in s.items()}
             grid.append(r); sty.append(s)
         gdf = pd.DataFrame(grid)
-        st.markdown('<div class="legend"><span style="background:#fff">confirmed</span><span style="background:#ebe6ff">converted from USD</span>'
-                    '<span style="background:#ffe9d6">? needs your decision, excluded from totals</span>'
-                    '<span style="background:#eeeeee;color:#777">not quoted</span> <small>Prices are in Rs, per unit asked for in the request.</small></div>', unsafe_allow_html=True)
-        st.dataframe(gdf.style.apply(lambda _: pd.DataFrame([{**{"Item": "", "Unit": "", "Qty": ""}, **s} for s in sty], columns=gdf.columns), axis=None),
-                     width="stretch", hide_index=True, height=min(35 * (len(items) + 1) + 3, 1100),
-                     column_config={"Item": st.column_config.TextColumn(width=240, pinned=True), "Unit": st.column_config.TextColumn(width=86), "Qty": st.column_config.NumberColumn(format="localized")})
-        vdf = pd.DataFrame([{"Vendor": short(r["vendor"]), "Quality check": ("Pass" if r["eligible"] else f"Fail: {r['eligibility_note']}"),
-                             "Items with a usable price": f"{r['lines_usable']} of {len(items)}", "Total for those items": fmt_inr(r["total"]),
-                             "Things to check": r["open_flags"]} for r in rows])
-        st.dataframe(vdf.style.map(lambda x: "color:#11743b;font-weight:600" if x == "Pass" else "color:#b42318;font-weight:600", subset=["Quality check"]),
-                     hide_index=True, width="stretch")
-        st.caption("Totals only add up items with a usable price, so a vendor with fewer usable items is not directly comparable.")
-        st.markdown("**Quality evidence**: what each vendor claimed, and what the attached documents prove")
-        edf = pd.DataFrame([{"Vendor": short(v), "ISO 9001 claimed": d["questionnaire"]["iso_9001"], "ISO 9001 evidence": d["_evidence"]["iso"],
-                             "Burst report claimed": d["questionnaire"]["burst_report"], "Burst test evidence": d["_evidence"]["burst"],
-                             "Quality check": "Pass" if vendor_eligibility(d)[0] else "Fail"} for v, d in docs.items()])
-        weak = lambda x: "color:#b45309;font-weight:600" if ("claimed, no" in str(x) or "during contract" in str(x)) else ("color:#b42318;font-weight:600" if any(w in str(x) for w in ("expired", "FAIL", "not ")) else "")
-        st.dataframe(edf.style.map(weak, subset=["ISO 9001 evidence", "Burst test evidence"])
-                        .map(lambda x: "color:#11743b;font-weight:600" if x == "Pass" else "color:#b42318;font-weight:600", subset=["Quality check"]),
-                     hide_index=True, width="stretch",
-                     column_config={"Vendor": st.column_config.TextColumn(width=150), "ISO 9001 claimed": st.column_config.TextColumn("ISO claimed", width=95),
-                                    "Burst report claimed": st.column_config.TextColumn("Burst claimed", width=105), "Quality check": st.column_config.TextColumn("Check", width=60)})
+        with st.container(border=True):
+            section("Prices per item", "Rs per unit asked for in the request. Pick any cell below under 'Where did a price come from?' to see its source.")
+            st.markdown('<div class="legend"><span style="background:#fff">confirmed</span><span style="background:#ebe6ff">converted from USD</span>'
+                        '<span style="background:#ffe9d6">? needs your decision, excluded from totals</span>'
+                        '<span style="background:#eeeeee;color:#777">not quoted</span></div>', unsafe_allow_html=True)
+            st.dataframe(gdf.style.apply(lambda _: pd.DataFrame([{**{"Item": "", "Unit": "", "Qty": ""}, **s} for s in sty], columns=gdf.columns), axis=None),
+                         width="stretch", hide_index=True, height=min(35 * (len(items) + 1) + 3, 1100),
+                         column_config={"Item": st.column_config.TextColumn(width=240, pinned=True), "Unit": st.column_config.TextColumn(width=86), "Qty": st.column_config.NumberColumn(format="localized")})
+        with st.container(border=True):
+            section("Vendors", "Totals only add up items with a usable price, so a vendor with fewer usable items is not directly comparable.")
+            vdf = pd.DataFrame([{"Vendor": short(r["vendor"]), "Quality check": ("Pass" if r["eligible"] else f"Fail: {r['eligibility_note']}"),
+                                 "Items with a usable price": f"{r['lines_usable']} of {len(items)}", "Total for those items": fmt_inr(r["total"]),
+                                 "Things to check": r["open_flags"]} for r in rows])
+            st.dataframe(vdf.style.map(lambda x: "color:#11743b;font-weight:600" if x == "Pass" else "color:#b42318;font-weight:600", subset=["Quality check"]),
+                         hide_index=True, width="stretch")
+        with st.container(border=True):
+            section("Quality evidence", "What each vendor claimed, and what their attached certificates and test reports actually prove.")
+            edf = pd.DataFrame([{"Vendor": short(v), "ISO 9001 claimed": d["questionnaire"]["iso_9001"], "ISO 9001 evidence": d["_evidence"]["iso"],
+                                 "Burst report claimed": d["questionnaire"]["burst_report"], "Burst test evidence": d["_evidence"]["burst"],
+                                 "Quality check": "Pass" if vendor_eligibility(d)[0] else "Fail"} for v, d in docs.items()])
+            weak = lambda x: "color:#b45309;font-weight:600" if ("claimed, no" in str(x) or "during contract" in str(x)) else ("color:#b42318;font-weight:600" if any(w in str(x) for w in ("expired", "FAIL", "not ")) else "")
+            st.dataframe(edf.style.map(weak, subset=["ISO 9001 evidence", "Burst test evidence"])
+                            .map(lambda x: "color:#11743b;font-weight:600" if x == "Pass" else "color:#b42318;font-weight:600", subset=["Quality check"]),
+                         hide_index=True, width="stretch",
+                         column_config={"Vendor": st.column_config.TextColumn(width=150), "ISO 9001 claimed": st.column_config.TextColumn("ISO claimed", width=95),
+                                        "Burst report claimed": st.column_config.TextColumn("Burst claimed", width=105), "Quality check": st.column_config.TextColumn("Check", width=60)})
 
-        with st.expander("Inspect any price: where it came from"):
+        with st.container(border=True):
+            section("Where did a price come from?", "Pick an item and a vendor to see the vendor's own words, how the price was worked out, and any photo region.")
             ic1, ic2 = st.columns(2)
             pick = ic1.selectbox("Item", [f"{it['id']}. {it['desc']}" for it in items])
             vsel = ic2.selectbox("Vendor", vend, format_func=short)
@@ -464,7 +502,14 @@ with t3:
             for f in c["flags"]:
                 st.write(f"To check ({FLAG_NAMES.get(f['type'], f['type'])}): {f['message']}")
 
-        st.subheader("Ask about the comparison")
+
+# ---------------------------------------------------------------- ask tab
+with t_ask:
+    if not cells:
+        st.info("Load the request and read the vendor replies first (tabs 1 and 2).")
+    else:
+        section("Ask about this comparison", "Plain questions, plain answers. The AI picks a calculation, the code runs it, "
+                                             "and every answer shows how it was worked out and what to watch out for.")
         qs = {"Missing items": "Which vendors did not quote all items, and which items are missing?",
               "Cheapest per item (chart)": "Who is cheapest per item? Show it as a chart.",
               "Unknown delivery costs": "Which quotes have delivery (freight) or other charges we have no number for?",
@@ -542,8 +587,8 @@ with t4:
         if not fl:
             st.success("Nothing left to check. Every price is confirmed, converted or marked not quoted.")
         else:
-            st.write(f"**{len(fl)} things to check.** Each decision updates the comparison and the AI's answers, and is written to the "
-                     "decision record (tab 5) with the total before and after.")
+            section(f"{len(fl)} things to check", "The app will not guess these for you. Each decision updates the comparison and the AI's "
+                                                  "answers, and is written to the decision record (tab 6) with the total before and after.")
             reset = lambda: S.update(flag_page=1)
             counts = {}
             for f in fl:
@@ -600,16 +645,16 @@ with t5:
     if not cells:
         st.info("Nothing decided yet. Load the request and the vendor replies first.")
     else:
-        split = {f.__name__: f for f in make_tools(docs, items, cells, vflags, S.last_year, [])}["split_award"](only_eligible=True)
+        split = split_now
         nopen = len(all_open_flags(cells, vflags))
-        st.markdown("**Who gets the order (split award), as things stand**")
+        section("Who gets the order (split award), as things stand", "Updated with every decision. Download the award pack to attach to the approval email.")
         k1, k2, k3 = st.columns(3)
         k1.metric("Total yearly cost", fmt_inr(split["total_inr"]))
         k2.metric("Saving vs last year", fmt_inr(split["saving_vs_last_year_inr"]), f"{split['saving_vs_last_year_pct']}%")
         k3.metric("Status", "Final" if not nopen else "Draft", help="Draft until every thing to check has a decision.")
         st.caption(" · ".join(f"{short(v)}: {fmt_inr(x)}" for v, x in sorted(split["by_vendor_inr"].items(), key=lambda kv: -kv[1])))
         if nopen:
-            st.warning(f"{nopen} things still to check (tab 4). Until they are decided, those prices are left out and the pack is marked DRAFT.")
+            st.warning(f"{nopen} things still to check (tab 5). Until they are decided, those prices are left out and the pack is marked DRAFT.")
         pack = award_pack.build(docs, items, cells, vflags, S.last_year, fx, S.log, S.turns, S.get("who") or "Buyer", now_ist(),
                                 short=short, flag_names=FLAG_NAMES, status_names=STATUS_NAMES)
         st.download_button("Download award pack (Excel)", pack, type="primary",
@@ -618,11 +663,10 @@ with t5:
                            help="Summary, who gets each item, the full comparison, quality evidence, this decision record, what is still "
                                 "to check, and the questions asked. Attach it to the approval email.")
 
-        st.markdown(f"**Decision record** ({len(S.log)} entries, newest first)")
-        st.caption("Every decision is written here with who made it, when, what it was based on and how it moved the total. "
-                   "Entries are never edited or deleted: an undo is a new entry, like a register.")
+        section(f"Decision record ({len(S.log)} entries, newest first)", "Who decided what, when, based on what, and how it moved the total. "
+                                                                          "Entries are never edited or deleted: an undo is a new entry, like a register.")
         if not S.log:
-            st.caption("No decisions yet. Decide things in tab 4 and they appear here.")
+            st.caption("No decisions yet. Decide things in tab 5 and they appear here.")
         else:
             entries = list(reversed(S.log))
             a, b = pager(len(entries), 10, "log_page")
@@ -645,3 +689,25 @@ with t5:
                                     key="undo_pick")
                 if u2.button("Undo", width="stretch"):
                     undo(pick["key"]); st.rerun()
+
+# ---------------------------------------------------------------- record header (top of the page)
+with header_slot:
+    rfq = S.get("rfq") or {}
+    if S.rfx:
+        title = rfq.get("title") or "Request for quotes"
+        meta = [f"<b>RFQ {rfq['no']}</b>" if rfq.get("no") else "", rfq.get("site", ""), f"<b>{len(S.rfx)}</b> items",
+                f"<b>{len(S.docs)}</b> vendor replies read" if S.docs else "no replies read yet",
+                f"<b>{len(S.supports)}</b> certificates and test reports" if S.supports else ""]
+    else:
+        title, meta = "No request loaded yet", ["Start in tab 1: load the sample request, or describe what you need"]
+    if split_now:
+        nopen = len(all_open_flags(cells, vflags))
+        badge = '<span class="badge final">Final</span>' if not nopen else '<span class="badge draft">Draft</span>'
+        right = (f'<div class="eyebrow">Who gets the order (split award)</div><div class="big">{fmt_inr(split_now["total_inr"])}{badge}</div>'
+                 f'<div class="meta">saves {fmt_inr(split_now["saving_vs_last_year_inr"])} vs last year · '
+                 + (f'<b>{nopen}</b> things to check' if nopen else 'nothing left to check') + '</div>')
+    else:
+        right = '<div class="meta">The comparison appears once replies are read.</div>'
+    st.markdown(f'''<div class="rec"><div class="left"><div class="eyebrow">Kill the quote spreadsheet</div>
+<div class="title">{title}</div><div class="meta">{" · ".join(m for m in meta if m)}</div></div><div class="right">{right}</div></div>''',
+                unsafe_allow_html=True)

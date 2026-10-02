@@ -19,7 +19,7 @@ baseRadius = "10px"
 showWidgetBorder = true
 
 [theme.sidebar]
-backgroundColor = "#0e0d59"
-secondaryBackgroundColor = "#1d1a7a"
-textColor = "#e9e6ff"
-borderColor = "#2c2890"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f1effc"
+textColor = "#1c1a4a"
+borderColor = "#dcd8f2"
