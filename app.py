@@ -11,7 +11,9 @@ def _load_helpers():
     missing (ImportError on the live app). Check each helper for names this version needs; once one is stale, reload it
     and every helper after it, since each imports from the ones before."""
     needs = [("schema", ("SupportDoc",)), ("extract", ("generate", "extract_support", "support_is_cached")),
-             ("normalize", ("attach_evidence", "match_vendor", "EVIDENCE_FLAGS")), ("analyst", ("ask", "EVIDENCE_FLAGS"))]
+             ("normalize", ("attach_evidence", "match_vendor", "EVIDENCE_FLAGS")), ("analyst", ("ask", "EVIDENCE_FLAGS")),
+             ("award_pack", ("build",))]
+    versions = {"analyst": 3}
     stale = False
     for name, names in needs:
         try:
@@ -19,7 +21,7 @@ def _load_helpers():
         except ImportError:  # it imports a name a stale earlier helper lacks; earlier helpers were reloaded above
             stale = True
             continue
-        if stale or any(not hasattr(m, n) for n in names):
+        if stale or any(not hasattr(m, n) for n in names) or getattr(m, "API_VERSION", 0) < versions.get(name, 0):
             stale = True
             importlib.reload(m)
     if stale:  # retry anything that failed to import
@@ -30,7 +32,8 @@ def _load_helpers():
 _load_helpers()
 import extract
 from normalize import build_cells, summarise, all_open_flags, vendor_eligibility, attach_evidence
-from analyst import ask
+from analyst import ask, make_tools
+import award_pack
 
 HERE = os.path.dirname(__file__)
 SAMPLE = os.path.join(HERE, "sample_data")
@@ -38,7 +41,8 @@ MAX_AI_CALLS = 120
 
 st.set_page_config(page_title="Quote comparison", page_icon="📦", layout="wide")
 S = st.session_state
-for k, v in dict(rfx=[], files={}, docs={}, supp_files={}, supports={}, resolutions={}, turns=[], last_year={}, ai_calls=0, outbox=[]).items():
+for k, v in dict(rfx=[], files={}, docs={}, supp_files={}, supports={}, resolutions={}, turns=[], last_year={}, ai_calls=0, outbox=[],
+              log=[], fx_prev=85.0).items():
     S.setdefault(k, v)
 
 
@@ -65,7 +69,7 @@ FLAG_NAMES = {"UNIT_MISMATCH": "Different unit or pack size", "LOW_CONFIDENCE": 
               "TEST_SCOPE": "Test done on a different box type", "REPORT_OLD": "Old test report"}
 TOOL_NAMES = {"split_award": "Who gets the order (split award)", "lowest_price_per_item": "Cheapest vendor per item",
               "vendor_overview": "Vendor summary", "compare_vendors": "Vendor vs vendor", "open_flags": "Things to check",
-              "vendor_terms": "Terms and quality documents"}
+              "vendor_terms": "Terms and quality documents", "decision_history": "Decision record"}
 STATUS_NAMES = {"ok": "Confirmed", "converted": "Confirmed, converted from USD", "blocked": "Needs your decision (not in totals)",
                 "assumed": "Not re-quoted: last year's price, needs your decision", "not_quoted": "Not quoted"}
 GLOSSARY = """
@@ -151,9 +155,56 @@ def fmt_inr(x):
     return f"Rs {x:,.0f}"
 
 
+def now_ist():
+    return pd.Timestamp.now(tz="Asia/Kolkata").strftime("%d %b %Y, %H:%M IST")
+
+
+def split_total(res, rate):
+    """Split-award total among vendors passing the quality check, for a given set of decisions. Same code as everywhere else."""
+    if not (S.docs and S.rfx):
+        return None
+    d = attach_evidence(S.docs, S.supports, res)[0]
+    c, vf = build_cells(d, S.rfx, rate, S.last_year, res)
+    return {f.__name__: f for f in make_tools(d, S.rfx, c, vf, S.last_year, [])}["split_award"](only_eligible=True)["total_inr"]
+
+
+def record(vendor, item_id, what, decision, source, before, after, key=None):
+    """Append-only, like a register: nothing is edited or deleted; an undo is a new entry."""
+    desc = next((it["desc"] for it in S.rfx if it["id"] == item_id), "")
+    S.log.append(dict(n=len(S.log) + 1, at=now_ist(), who=S.get("who") or "Buyer", vendor=short(vendor) if vendor else "",
+                      vendor_key=vendor, item_id=item_id, item=f"{item_id}. {desc}" if item_id else ("whole quote" if vendor else ""),
+                      what=what, decision=decision, source=source, before=before, after=after, key=key))
+
+
+def decide(key, res, vendor, item_id, what, decision, source):
+    """Save a buyer decision, record it with the total before and after, and refresh."""
+    rate = S.get("fx", 85.0)
+    before = split_total(S.resolutions, rate)
+    S.resolutions = {**S.resolutions, key: res}
+    record(vendor, item_id, what, decision, source, before, split_total(S.resolutions, rate), key)
+    st.rerun()
+
+
+def undo(key):
+    e = next(e for e in reversed(S.log) if e.get("key") == key and not e["decision"].startswith("Undid"))
+    rate = S.get("fx", 85.0)
+    before = split_total(S.resolutions, rate)
+    S.resolutions = {k: v for k, v in S.resolutions.items() if k != key}
+    record(e["vendor_key"], e["item_id"], e["what"], f"Undid #{e['n']} ({e['decision']})", "Buyer reversed an earlier decision",
+           before, split_total(S.resolutions, rate), key)
+
+
+def fx_changed():
+    new, old = S.fx, S.fx_prev
+    record(None, 0, "Dollar to rupee rate", f"Changed from {old:g} to {new:g}", "Sidebar setting",
+           split_total(S.resolutions, old), split_total(S.resolutions, new))
+    S.fx_prev = new
+
+
 with st.sidebar:
     st.header("Settings")
-    fx = st.number_input("Dollar to rupee rate (USD to INR)", value=85.0, step=0.5,
+    st.text_input("Your name (for the decision record)", value="Buyer", key="who")
+    fx = st.number_input("Dollar to rupee rate (USD to INR)", value=85.0, step=0.5, key="fx", on_change=fx_changed,
                          help="Used to convert prices quoted in US dollars. Applied by the calculations, never by the AI.")
     st.caption("Demo rate. In real use it would be fixed per request, with its date.")
     st.caption(f"AI questions used this session: {S.ai_calls} of {MAX_AI_CALLS}")
@@ -188,7 +239,7 @@ st.markdown("""<style>
 <p>Messy vendor quotes in, one comparison you can defend. AI reads the quotes; every number is calculated, never guessed.</p>
 <div class="steps"><span><b>1</b>Ask for quotes</span><span><b>2</b>Read any reply</span><span><b>3</b>Compare and ask</span><span><b>4</b>Check what's unclear</span></div>
 </div>""", unsafe_allow_html=True)
-t1, t2, t3, t4 = st.tabs(["1. Request for quotes", "2. Vendor replies", "3. Compare and ask", "4. Things to check"])
+t1, t2, t3, t4, t5 = st.tabs(["1. Request for quotes", "2. Vendor replies", "3. Compare and ask", "4. Things to check", "5. Decision record"])
 
 # ---------------------------------------------------------------- tab 1
 with t1:
@@ -302,7 +353,15 @@ with t2:
                 st.write(f"**{sd['_file']}** is issued to '{sd['issued_to']}', which matches no vendor. Which vendor sent it?")
                 pick = st.selectbox("Vendor", list(S.docs), format_func=short, key=f"assign_{sd['_file']}")
                 if st.button("Assign", key=f"assignb_{sd['_file']}"):
-                    S.resolutions[f"support|{sd['_file']}"] = {"vendor": pick}; st.rerun()
+                    decide(f"support|{sd['_file']}", {"vendor": pick}, pick, 0, "Document matched to vendor",
+                           f"Assigned {sd['_file']} to {short(pick)}", f"Document issued to '{sd['issued_to']}'")
+
+def source_text(f):
+    """What a decision was based on: the flag's message plus the vendor's own words, for the decision record."""
+    c = cells[f["vendor"]][f["item_id"]] if f["item_id"] else None
+    src = f" | Source {c['source'].get('ref')}: {c['source'].get('snippet')}" if c and c["source"] else ""
+    return f["message"] + src
+
 
 def show_crop(vendor, c):
     """Show the region of a photo a value was read from (box_2d is 0-1000 [ymin, xmin, ymax, xmax])."""
@@ -425,7 +484,7 @@ with t3:
                 with st.spinner("Analysing..."):
                     try:
                         S.ai_calls += 1
-                        ans, trace, model = ask(question, hist, docs, items, cells, vflags, S.last_year)
+                        ans, trace, model = ask(question, hist, docs, items, cells, vflags, S.last_year, S.log)
                     except Exception as e:
                         ans, trace, model = f"The analyst call failed: {e}", [], None
                 S.turns.append(dict(n=len(S.turns) + 1, q=question, a=ans, trace=trace, model=model,
@@ -483,21 +542,25 @@ with t4:
         if not fl:
             st.success("Nothing left to check. Every price is confirmed, converted or marked not quoted.")
         else:
-            st.write(f"**{len(fl)} things to check.** Each decision you make updates the comparison and the AI's answers.")
+            st.write(f"**{len(fl)} things to check.** Each decision updates the comparison and the AI's answers, and is written to the "
+                     "decision record (tab 5) with the total before and after.")
             reset = lambda: S.update(flag_page=1)
             counts = {}
             for f in fl:
                 counts[f["type"]] = counts.get(f["type"], 0) + 1
-            type_opts = {f"{FLAG_NAMES.get(k, k)} ({c})": k for k, c in sorted(counts.items(), key=lambda kv: -kv[1])}
-            pick_types = st.pills("Type", list(type_opts), selection_mode="multi", key="flag_types", on_change=reset,
+            # Options are the stable type codes; only the label carries the count, so a selection survives a decision changing it.
+            type_opts = [k for k, _ in sorted(counts.items(), key=lambda kv: -kv[1])]
+            pick_types = st.pills("Type", type_opts, selection_mode="multi", key="flag_types", on_change=reset,
+                                  format_func=lambda k: f"{FLAG_NAMES.get(k, k)} ({counts.get(k, 0)})",
                                   help="Pick one or more types. None selected shows all.")
             vcounts = {}
             for f in fl:
                 vcounts[f["vendor"]] = vcounts.get(f["vendor"], 0) + 1
-            vopts = {"All vendors": None, **{f"{short(v)} ({c})": v for v, c in vcounts.items()}}
-            pick_v = st.pills("Vendor", list(vopts), key="flag_vendor", on_change=reset, default="All vendors")
-            want_types = {type_opts[x] for x in pick_types or []}
-            want_v = vopts.get(pick_v)
+            vopts = ["All vendors"] + list(vcounts)
+            pick_v = st.pills("Vendor", vopts, key="flag_vendor", on_change=reset, default="All vendors",
+                              format_func=lambda v: v if v == "All vendors" else f"{short(v)} ({vcounts.get(v, 0)})")
+            want_types = set(pick_types or []) & set(type_opts)
+            want_v = None if pick_v in (None, "All vendors") else pick_v
             shown = [f for f in fl if (not want_types or f["type"] in want_types) and (not want_v or f["vendor"] == want_v)]
             if not shown:
                 st.caption("Nothing to check matches these filters.")
@@ -519,13 +582,66 @@ with t4:
                         val = b2.number_input("Or type the correct price (Rs, per unit asked for)", value=(None if c["display_price"] is None else float(c["display_price"])), min_value=0.0, step=0.5,
                                               placeholder="Type the price you read", key=f"v_{k}")
                         if b2.button("Use my value", key=f"e_{k}", disabled=not val):
-                            S.resolutions[k] = dict(action="edit", price=val); st.rerun()
+                            decide(k, dict(action="edit", price=val), f["vendor"], f["item_id"], FLAG_NAMES.get(f["type"], f["type"]),
+                                   f"Typed price Rs {val:g}", source_text(f))
                     if f["type"] == "UNMATCHED_LINE":
                         target = b2.selectbox("Which item is it?", [f"{it['id']}. {it['desc']}" for it in items], key=f"m_{k}")
                         if b2.button("Match to this item", key=f"mb_{k}"):
-                            S.resolutions[k] = dict(action="map", item_id=int(target.split(".")[0])); st.rerun()
+                            decide(k, dict(action="map", item_id=int(target.split(".")[0])), f["vendor"], 0, FLAG_NAMES.get(f["type"], f["type"]),
+                                   f"Matched to item {target}", f["message"])
                     if f["type"] != "UNREADABLE_PRICE":
                         label = ("Leave it out" if f["type"] == "UNMATCHED_LINE" else "Accept the claim" if f["type"] == "EVIDENCE_MISSING"
                                  else "Looks right" if f["item_id"] else "Accept")
                         if b1.button(label, key=f"a_{k}"):
-                            S.resolutions[k] = dict(action="accept"); st.rerun()
+                            decide(k, dict(action="accept"), f["vendor"], f["item_id"], FLAG_NAMES.get(f["type"], f["type"]), label, source_text(f))
+
+# ---------------------------------------------------------------- tab 5
+with t5:
+    if not cells:
+        st.info("Nothing decided yet. Load the request and the vendor replies first.")
+    else:
+        split = {f.__name__: f for f in make_tools(docs, items, cells, vflags, S.last_year, [])}["split_award"](only_eligible=True)
+        nopen = len(all_open_flags(cells, vflags))
+        st.markdown("**Who gets the order (split award), as things stand**")
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Total yearly cost", fmt_inr(split["total_inr"]))
+        k2.metric("Saving vs last year", fmt_inr(split["saving_vs_last_year_inr"]), f"{split['saving_vs_last_year_pct']}%")
+        k3.metric("Status", "Final" if not nopen else "Draft", help="Draft until every thing to check has a decision.")
+        st.caption(" · ".join(f"{short(v)}: {fmt_inr(x)}" for v, x in sorted(split["by_vendor_inr"].items(), key=lambda kv: -kv[1])))
+        if nopen:
+            st.warning(f"{nopen} things still to check (tab 4). Until they are decided, those prices are left out and the pack is marked DRAFT.")
+        pack = award_pack.build(docs, items, cells, vflags, S.last_year, fx, S.log, S.turns, S.get("who") or "Buyer", now_ist(),
+                                short=short, flag_names=FLAG_NAMES, status_names=STATUS_NAMES)
+        st.download_button("Download award pack (Excel)", pack, type="primary",
+                           file_name=f"award_pack_{pd.Timestamp.now(tz='Asia/Kolkata'):%Y%m%d_%H%M}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           help="Summary, who gets each item, the full comparison, quality evidence, this decision record, what is still "
+                                "to check, and the questions asked. Attach it to the approval email.")
+
+        st.markdown(f"**Decision record** ({len(S.log)} entries, newest first)")
+        st.caption("Every decision is written here with who made it, when, what it was based on and how it moved the total. "
+                   "Entries are never edited or deleted: an undo is a new entry, like a register.")
+        if not S.log:
+            st.caption("No decisions yet. Decide things in tab 4 and they appear here.")
+        else:
+            entries = list(reversed(S.log))
+            a, b = pager(len(entries), 10, "log_page")
+            st.dataframe(pd.DataFrame([{"#": e["n"], "When": e["at"].replace(" IST", ""), "Vendor": e["vendor"], "Item": e["item"],
+                                        "Decision": e["decision"],
+                                        "Change to total": ("no change" if e["before"] == e["after"] else
+                                                            f"{'+' if e['after'] > e['before'] else '−'}{fmt_inr(abs(e['after'] - e['before']))}")
+                                        if None not in (e["before"], e["after"]) else "",
+                                        "Total after": fmt_inr(e["after"]), "What": e["what"], "Who": e["who"],
+                                        "Total before": fmt_inr(e["before"]), "Based on": e["source"]} for e in entries[a:b]]),
+                         hide_index=True, width="stretch", column_config={"#": st.column_config.NumberColumn(width=40)})
+            active = [e for e in reversed(S.log) if e.get("key") in S.resolutions and not e["decision"].startswith("Undid")]
+            seen, choices = set(), []
+            for e in active:
+                if e["key"] not in seen:
+                    seen.add(e["key"]); choices.append(e)
+            if choices:
+                u1, u2 = st.columns([4, 1], vertical_alignment="bottom")
+                pick = u1.selectbox("Undo a decision", choices, format_func=lambda e: f"#{e['n']} · {e['vendor']} · {e['item']} · {e['decision']}",
+                                    key="undo_pick")
+                if u2.button("Undo", width="stretch"):
+                    undo(pick["key"]); st.rerun()

@@ -2,6 +2,8 @@
 import os
 from normalize import vendor_eligibility, summarise, all_open_flags, EVIDENCE_FLAGS
 
+API_VERSION = 3  # bump when a tool or signature changes; app.py reloads a stale copy left in memory after a deploy
+
 SYSTEM = """You are a procurement analyst helping a buyer decide which vendor gets the order for each item.
 Rules:
 - Every number in your answer must come from a tool result. Never calculate totals, savings or averages yourself.
@@ -19,7 +21,7 @@ Rules:
 - A quality claim with no attached certificate or report is a claim, not evidence. Say so when it matters to who gets the order."""
 
 
-def make_tools(docs, items, cells, vflags, last_year, trace):
+def make_tools(docs, items, cells, vflags, last_year, trace, decisions=None):
     qty = {i["id"]: i["qty"] for i in items}
     desc = {i["id"]: i["desc"] for i in items}
     unit = {i["id"]: i["unit"] for i in items}
@@ -165,16 +167,28 @@ def make_tools(docs, items, cells, vflags, last_year, trace):
         return log("vendor_terms", {}, dict(table=table, calculation="Terms and quality answers as the vendors wrote them, plus what their attached documents prove.",
                                             caveats=["'Not stated' means the vendor did not say, not that the answer is No."]))
 
-    return [vendor_overview, lowest_price_per_item, split_award, compare_vendors, open_flags, vendor_terms]
+    def decision_history(vendor: str = "", item_id: int = 0) -> dict:
+        """What the buyer decided so far, in order (accepted a reading, typed a price, matched an item, changed the dollar rate, undid
+        something), with the source it was based on and the total before and after. Optionally filter by vendor (partial name) or item number."""
+        v = find_vendor(vendor) if vendor else None
+        rows = [dict(n=e["n"], at=e["at"], who=e["who"], vendor=e["vendor"], item=e["item"], what=e["what"], decision=e["decision"],
+                     based_on=e["source"], total_before_inr=e["before"], total_after_inr=e["after"]) for e in (decisions or [])
+                if (not v or e.get("vendor_key") == v) and (not item_id or e.get("item_id") == item_id)]
+        return log("decision_history", dict(vendor=vendor, item_id=item_id),
+                    dict(table=rows, count=len(rows), calculation="The buyer's decisions as recorded, oldest first. Totals are the split award "
+                                                                  "among vendors that passed the quality check, before and after each decision.",
+                         caveats=[] if rows else ["No decisions recorded yet for this filter."]))
+
+    return [vendor_overview, lowest_price_per_item, split_award, compare_vendors, open_flags, vendor_terms, decision_history]
 
 
-def ask(question, history, docs, items, cells, vflags, last_year):
+def ask(question, history, docs, items, cells, vflags, last_year, decisions=None):
     """history: list of (role, text). Returns (answer_text, trace, model_used)."""
     from google import genai
     from google.genai import types
     from extract import generate
     trace = []
-    tools = make_tools(docs, items, cells, vflags, last_year, trace)
+    tools = make_tools(docs, items, cells, vflags, last_year, trace, decisions)
     contents = [types.Content(role=("user" if r == "user" else "model"), parts=[types.Part.from_text(text=t)]) for r, t in history]
     contents.append(types.Content(role="user", parts=[types.Part.from_text(text=question)]))
     resp, used = generate(contents, types.GenerateContentConfig(system_instruction=SYSTEM, tools=tools, temperature=0.2),

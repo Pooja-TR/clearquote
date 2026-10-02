@@ -146,6 +146,37 @@ def test_award_unchanged_once_buyer_accepts_claims():
     assert abs(r["total_inr"] - key_total) < 5
 
 
+def test_award_pack_matches_screen_and_answer_key():
+    import io, award_pack
+    d, _ = evidence()
+    c, vf = build_cells(d, items, G["fx"], ly, {})
+    draft = openpyxl.load_workbook(io.BytesIO(award_pack.build(d, items, c, vf, ly, G["fx"], [], [], "T", "now")))
+    status = {r[0]: r[1] for r in draft["Summary"].iter_rows(values_only=True) if r[0]}
+    assert status["Status"].startswith("DRAFT") and draft["Still to check"].max_row > 1
+    res = {f["key"]: {"action": "accept"} for f in all_open_flags(c, vf)}
+    d, _ = evidence(res=res)                       # evidence decisions live in the same resolutions, as in the app
+    c, vf = build_cells(d, items, G["fx"], ly, res)
+    log = [dict(n=1, at="now", who="T", vendor="Maruti Cartons", vendor_key="Maruti Cartons", item_id=9, item="9. x", what="Price unreadable",
+                decision="Typed price Rs 69", source="photo row 9", before=1, after=2)]
+    wb = openpyxl.load_workbook(io.BytesIO(award_pack.build(d, items, c, vf, ly, G["fx"], log, [], "T", "now")))
+    summary = {r[0]: r[1] for r in wb["Summary"].iter_rows(values_only=True) if r[0]}
+    key_total = openpyxl.load_workbook(KEY, data_only=True)["Split award"]["B36"].value
+    assert abs(summary["Total yearly cost (Rs)"] - key_total) < 5 and summary["Status"].startswith("FINAL")
+    assert sum(r[5] for r in wb["Who gets the order"].iter_rows(min_row=2, values_only=True)) == summary["Total yearly cost (Rs)"]
+    assert wb["Decision log"].max_row == 2 and wb["Still to check"].max_row == 1
+
+
+def test_decision_history_tool_filters():
+    c, vf = run({})
+    log = [dict(n=1, at="t", who="T", vendor="Maruti Cartons", vendor_key="Maruti Cartons", item_id=9, item="9", what="w", decision="d",
+                source="s", before=1, after=2),
+           dict(n=2, at="t", who="T", vendor="", vendor_key=None, item_id=0, item="", what="Dollar to rupee rate", decision="85 to 86",
+                source="s", before=2, after=3)]
+    t = {f.__name__: f for f in make_tools(docs, items, c, vf, ly, [], log)}
+    assert t["decision_history"]()["count"] == 2
+    assert t["decision_history"](vendor="maruti")["count"] == 1 and t["decision_history"](item_id=9)["count"] == 1
+
+
 if __name__ == "__main__":
     for n, f in list(globals().items()):
         if n.startswith("test_"):
