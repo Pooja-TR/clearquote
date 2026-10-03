@@ -248,7 +248,14 @@ st.markdown("""<style>
 .rec .meta {font-size: .86rem; color: #5b5880;}
 .rec .meta b {color: #1c1a4a; font-weight: 600;}
 .rec .left {flex: 1; min-width: 0;} .rec .right {text-align: right; flex: none;}
-@media (max-width: 900px) {.rec {flex-wrap: wrap;} .rec .right {text-align: left;}}
+.mobile-hint {display: none;}
+@media (max-width: 900px) {.rec {flex-wrap: wrap;} .rec .right {text-align: left; flex: 1 1 100%; min-width: 0;}}
+@media (max-width: 640px) {
+  .block-container {padding-left: 0.8rem; padding-right: 0.8rem;}
+  .rec {padding: 12px 14px; gap: 10px;} .rec .title {font-size: 1.1rem;} .rec .big {font-size: 1.3rem;}
+  [data-testid="stMetric"] {padding: 6px 12px;} [data-testid="stMetricValue"] {font-size: 1.5rem;}
+  .mobile-hint {display: block; margin-top: 4px;}
+}
 .rec .big {font-size: 1.5rem; font-weight: 700; color: #3d05c6; line-height: 1.2;}
 .badge {display: inline-block; font-size: .75rem; font-weight: 700; padding: 2px 10px; border-radius: 999px; margin-left: 8px; vertical-align: middle;}
 .badge.draft {background: #fff1e0; color: #b45309;} .badge.final {background: #e3f6ea; color: #11743b;}
@@ -484,7 +491,8 @@ with t3:
             grid.append(r); sty.append(s)
         gdf = pd.DataFrame(grid)
         with st.container(border=True):
-            section("Prices per item", "Rs per unit asked for in the request. Pick any cell below under 'Where did a price come from?' to see its source.")
+            section("Prices per item", "Rs per unit asked for in the request. Pick any cell below under 'Where did a price come from?' to see its source."
+                                       '<span class="mobile-hint">On a small screen, swipe the table sideways to see each vendor.</span>')
             st.markdown('<div class="legend"><span style="background:#fff">confirmed</span><span style="background:#ebe6ff">converted from USD</span>'
                         '<span style="background:#ffe9d6">? needs your decision, excluded from totals</span>'
                         '<span style="background:#eeeeee;color:#777">not quoted</span></div>', unsafe_allow_html=True)
