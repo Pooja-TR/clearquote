@@ -2,7 +2,7 @@
 import os
 from normalize import vendor_eligibility, summarise, all_open_flags, EVIDENCE_FLAGS
 
-API_VERSION = 3  # bump when a tool or signature changes; app.py reloads a stale copy left in memory after a deploy
+API_VERSION = 4  # bump when a tool or signature changes; app.py reloads a stale copy left in memory after a deploy
 
 SYSTEM = """You are a procurement analyst helping a buyer decide which vendor gets the order for each item.
 Rules:
@@ -129,6 +129,44 @@ def make_tools(docs, items, cells, vflags, last_year, trace, decisions=None):
                            [f"{v}: {f['message']}" for v in by_vendor for f in vflags[v] if f["type"] in EVIDENCE_FLAGS and not f["resolved"]])
         return log("split_award", dict(only_eligible=only_eligible, include_low_confidence=include_low_confidence), res)
 
+    def _split_total(only_eligible, include_low):
+        """Split-award total without logging a tool call (single_vendor_award compares against it)."""
+        total = 0.0
+        for it in items:
+            cands = [price_of(v, it["id"], include_low) for v in vendors if (elig[v] or not only_eligible) and price_of(v, it["id"], include_low) is not None]
+            total += min(cands) * qty[it["id"]] if cands else 0
+        return total
+
+    def single_vendor_award(only_eligible: bool = True, include_low_confidence: bool = False) -> dict:
+        """Give the WHOLE order to one vendor: for each vendor, the yearly total if it supplied every item, the saving versus last year,
+        and how much more it costs than the split award. A vendor qualifies only with a usable price for every item; others are
+        listed with the reason. Defaults to vendors that passed the quality check."""
+        split_total = _split_total(only_eligible, include_low_confidence)
+        ly_all = sum(last_year.get(i, 0) * qty[i] for i in qty)
+        rows, excluded = [], []
+        for v in vendors:
+            if only_eligible and not elig[v]:
+                excluded.append(f"{v}: fails the quality check ({vendor_eligibility(docs[v])[1]}).")
+                continue
+            missing = [i for i in qty if price_of(v, i, include_low_confidence) is None]
+            if missing:
+                excluded.append(f"{v}: no usable price for {len(missing)} item(s) (items {', '.join(map(str, missing[:8]))}"
+                                f"{'...' if len(missing) > 8 else ''}), so it cannot take the whole order yet.")
+                continue
+            total = sum(qty[i] * price_of(v, i, include_low_confidence) for i in qty)
+            rows.append(dict(vendor=v, total_inr=round(total), saving_vs_last_year_inr=round(ly_all - total),
+                             saving_vs_last_year_pct=round(100 * (ly_all - total) / ly_all, 1) if ly_all else None,
+                             extra_vs_split_award_inr=round(total - split_total)))
+        rows.sort(key=lambda r: r["total_inr"])
+        res = dict(table=rows, best_single_vendor=rows[0]["vendor"] if rows else None, last_year_cost_all_items_inr=round(ly_all),
+                   split_award_total_inr=round(split_total),
+                   chart=dict(title="Whole order with one vendor (INR)", data=[dict(label=r["vendor"], value=r["total_inr"]) for r in rows]),
+                   calculation=f"For each {'quality-passing ' if only_eligible else ''}vendor with a usable price for all {len(qty)} items: "
+                               "price × yearly quantity, added up. Saving = last year's prices × the same quantities, minus that total. "
+                               "Extra cost = that total minus the split award.",
+                   caveats=excluded + ([] if rows else ["No vendor can take the whole order yet: decide the things to check first."]))
+        return log("single_vendor_award", dict(only_eligible=only_eligible, include_low_confidence=include_low_confidence), res)
+
     def compare_vendors(vendor_a: str, vendor_b: str, item_filter: str = "") -> dict:
         """Side-by-side prices of two vendors for lines whose description contains item_filter (for example '5-ply'). Vendor names can be partial."""
         a, b = find_vendor(vendor_a), find_vendor(vendor_b)
@@ -179,7 +217,7 @@ def make_tools(docs, items, cells, vflags, last_year, trace, decisions=None):
                                                                   "among vendors that passed the quality check, before and after each decision.",
                          caveats=[] if rows else ["No decisions recorded yet for this filter."]))
 
-    return [vendor_overview, lowest_price_per_item, split_award, compare_vendors, open_flags, vendor_terms, decision_history]
+    return [vendor_overview, lowest_price_per_item, split_award, single_vendor_award, compare_vendors, open_flags, vendor_terms, decision_history]
 
 
 def ask(question, history, docs, items, cells, vflags, last_year, decisions=None):

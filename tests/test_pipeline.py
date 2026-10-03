@@ -177,6 +177,21 @@ def test_decision_history_tool_filters():
     assert t["decision_history"](vendor="maruti")["count"] == 1 and t["decision_history"](item_id=9)["count"] == 1
 
 
+def test_single_vendor_award():
+    res = accept_all()
+    c, vf = run(res)
+    t = {f.__name__: f for f in make_tools(docs, items, c, vf, ly, [])}
+    split = t["split_award"](only_eligible=True)
+    r = t["single_vendor_award"](only_eligible=True)
+    assert r["best_single_vendor"] == "Maruti Cartons" and r["split_award_total_inr"] == split["total_inr"]
+    best = r["table"][0]
+    assert best["total_inr"] - split["total_inr"] == split["best_single_award_saving_inr"]          # same Rs 6.74 lakh as the key
+    assert best["saving_vs_last_year_inr"] == r["last_year_cost_all_items_inr"] - best["total_inr"]
+    assert any("Pune Box" in cv and "items" in cv for cv in r["caveats"])                             # 27 of 30: cannot take it all
+    open_ = t_open = {f.__name__: f for f in make_tools(docs, items, *run({}), ly, [])}["single_vendor_award"]()
+    assert all(v["vendor"] != "Deccan Corrugators Pvt. Ltd." for v in open_["table"])                # fails the quality check
+
+
 if __name__ == "__main__":
     for n, f in list(globals().items()):
         if n.startswith("test_"):

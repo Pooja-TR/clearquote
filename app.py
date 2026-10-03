@@ -13,7 +13,7 @@ def _load_helpers():
     needs = [("schema", ("SupportDoc",)), ("extract", ("generate", "extract_support", "support_is_cached")),
              ("normalize", ("attach_evidence", "match_vendor", "EVIDENCE_FLAGS")), ("analyst", ("ask", "EVIDENCE_FLAGS")),
              ("award_pack", ("build",))]
-    versions = {"analyst": 3}
+    versions = {"analyst": 4}
     stale = False
     for name, names in needs:
         try:
@@ -72,7 +72,7 @@ FLAG_NAMES = {"UNIT_MISMATCH": "Different unit or pack size", "LOW_CONFIDENCE": 
               "TEST_SCOPE": "Test done on a different box type", "REPORT_OLD": "Old test report"}
 TOOL_NAMES = {"split_award": "Who gets the order (split award)", "lowest_price_per_item": "Cheapest vendor per item",
               "vendor_overview": "Vendor summary", "compare_vendors": "Vendor vs vendor", "open_flags": "Things to check",
-              "vendor_terms": "Terms and quality documents", "decision_history": "Decision record"}
+              "vendor_terms": "Terms and quality documents", "decision_history": "Decision record", "single_vendor_award": "Whole order with one vendor"}
 STATUS_NAMES = {"ok": "Confirmed", "converted": "Confirmed, converted from USD", "blocked": "Needs your decision (not in totals)",
                 "assumed": "Not re-quoted: last year's price, needs your decision", "not_quoted": "Not quoted"}
 GLOSSARY = """
@@ -547,6 +547,7 @@ with t_ask:
               "Cheapest per item (chart)": "Who is cheapest per item? Show it as a chart.",
               "Unknown delivery costs": "Which quotes have delivery (freight) or other charges we have no number for?",
               "Who gets the order + saving": "If each item goes to the cheapest vendor that passed the quality check, who gets the order, what is the total, and what is the saving versus last year?",
+              "One vendor for everything": "If one vendor that passed the quality check gets the whole order, who should it be, what is the total, and what is the saving versus last year?",
               "What is unresolved?": "What is still unresolved, and could any of it change who gets the order?"}
         picked = st.pills("Suggested questions", list(qs), key=f"sugg{len(S.turns)}", help="Click to ask. Hover a finished answer's question to see it in full.")
         with st.form("ask_form", clear_on_submit=True, border=False):
