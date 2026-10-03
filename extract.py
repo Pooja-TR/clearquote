@@ -1,5 +1,5 @@
 """AI extraction. The model READS documents and returns structured data with sources. It never converts, sums or compares."""
-import hashlib, io, json, os, time
+import datetime as dt, hashlib, io, json, os, threading, time
 from schema import Doc, Draft, SupportDoc
 
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
@@ -40,6 +40,7 @@ def _client():
 
 def _new_client():
     from google import genai
+    from google.genai import types
     key = os.environ.get("GEMINI_API_KEY")
     if not key:
         try:
@@ -49,7 +50,7 @@ def _new_client():
             key = None
     if not key:
         raise RuntimeError("GEMINI_API_KEY is not set")
-    return genai.Client(api_key=key)
+    return genai.Client(api_key=key, http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_S * 1000))
 
 
 def file_hash(data: bytes) -> str:
@@ -91,32 +92,79 @@ def kind_of(name: str) -> str:
     return "unknown"
 
 
+# Fail fast on the free tier: one request may take REQUEST_TIMEOUT_S, a whole question BUDGET_S across the fallback chain.
+REQUEST_TIMEOUT_S, BUDGET_S = 45, 90
+FALLBACK_SIGNS = ("503", "UNAVAILABLE", "404", "NOT_FOUND", "429", "RESOURCE_EXHAUSTED", "PerDay", "timed out", "Timeout", "DEADLINE_EXCEEDED", "504")
+_SKIP = {}  # model -> time until which it is skipped (shared by all sessions: the quota is per project)
+_LOCAL = threading.local()
+
+
+class progress:
+    """`with extract.progress(fn):` calls fn(text) as generate() moves through the models, so the screen never looks frozen."""
+    def __init__(self, fn):
+        self.fn = fn
+
+    def __enter__(self):
+        self.prev, _LOCAL.fn = getattr(_LOCAL, "fn", None), self.fn
+
+    def __exit__(self, *exc):
+        _LOCAL.fn = self.prev
+
+
+def _say(text):
+    fn = getattr(_LOCAL, "fn", None)
+    if fn:
+        fn(text)
+
+
+def _next_quota_reset():
+    """Free-tier daily quotas reset at midnight US Pacific time."""
+    from zoneinfo import ZoneInfo
+    now = dt.datetime.now(ZoneInfo("America/Los_Angeles"))
+    return (now + dt.timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0).timestamp()
+
+
 def _retry(fn, tries=2):
+    """Retry only a momentary overload, once and briefly; anything else moves straight on to the next model."""
     for k in range(tries):
         try:
             return fn()
-        except Exception as e:  # free tier rate limits surface as 429 / RESOURCE_EXHAUSTED
-            msg = str(e)
-            if k == tries - 1 or "PerDay" in msg or not any(s in msg for s in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")):
+        except Exception as e:
+            if k == tries - 1 or not any(s in str(e) for s in ("503", "UNAVAILABLE")):
                 raise
-            time.sleep(5 * (k + 1))
+            time.sleep(3)
 
 
-def generate(contents, config, before_attempt=None):
-    """Call MODEL, then each fallback if a model stays overloaded or is retired. Returns (response, model_used).
-    before_attempt runs before every try, e.g. to clear a tool trace left by a failed attempt."""
-    last = None
-    for m in [MODEL] + FALLBACKS:
+def generate(contents, config, before_attempt=None, budget=None):
+    """Call MODEL, then each fallback, skipping models known to be out of quota, retired or just overloaded.
+    Returns (response, model_used). before_attempt runs before every try, e.g. to clear a tool trace left by a failed attempt."""
+    budget = budget or BUDGET_S
+    start, last, tried = time.time(), None, []
+    models = [m for m in [MODEL] + FALLBACKS if _SKIP.get(m, 0) < time.time()]
+    if not models:
+        raise RuntimeError("429 RESOURCE_EXHAUSTED: every model's free allowance is used up for today (PerDay)")
+    for n, m in enumerate(models):
+        if time.time() - start > budget:
+            raise TimeoutError(f"The AI timed out after {budget}s (busy). Tried: {', '.join(tried)}")
+        _say(f"Asking the AI ({m})" if not tried else f"{tried[-1]} is busy or out of allowance, trying {m}")
+
         def call():
             if before_attempt:
                 before_attempt()
             return _client().models.generate_content(model=m, contents=contents, config=config)
         try:
-            return _retry(call), m
+            return _retry(call, 2 if n == 0 else 1), m
         except Exception as e:
             msg = str(e)
-            if not any(s in msg for s in ("503", "UNAVAILABLE", "404", "NOT_FOUND", "PerDay")):
+            if not any(s in msg for s in FALLBACK_SIGNS):
                 raise
+            if "PerDay" in msg:
+                _SKIP[m] = _next_quota_reset()            # out for the day
+            elif "404" in msg or "NOT_FOUND" in msg:
+                _SKIP[m] = time.time() + 7 * 86400        # retired or unknown model
+            else:
+                _SKIP[m] = time.time() + 60               # busy or per-minute limit: give it a minute
+            tried.append(m)
             last = e
     raise last
 

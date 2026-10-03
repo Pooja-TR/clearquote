@@ -10,7 +10,7 @@ def _load_helpers():
     """After a git push, Streamlit Cloud re-runs this file but can keep the OLD helper modules in memory, so new names are
     missing (ImportError on the live app). Check each helper for names this version needs; once one is stale, reload it
     and every helper after it, since each imports from the ones before."""
-    needs = [("schema", ("SupportDoc",)), ("extract", ("generate", "extract_support", "support_is_cached")),
+    needs = [("schema", ("SupportDoc",)), ("extract", ("generate", "extract_support", "support_is_cached", "progress")),
              ("normalize", ("attach_evidence", "match_vendor", "EVIDENCE_FLAGS")), ("analyst", ("ask", "EVIDENCE_FLAGS")),
              ("award_pack", ("build",)), ("followup", ("draft", "questions"))]
     versions = {"analyst": 4}
@@ -117,7 +117,7 @@ def friendly_error(e):
         return ("Today's free AI allowance is used up (this demo runs on Gemini's free tier). Everything already read still works: "
                 "the comparison, things to check, decisions and the award pack. Reading new files and answering questions comes back "
                 "after midnight US Pacific time (early afternoon in India).")
-    if any(k in msg for k in ("503", "UNAVAILABLE", "overloaded", "high demand")):
+    if any(k in msg for k in ("503", "UNAVAILABLE", "overloaded", "high demand", "timed out", "Timeout", "DEADLINE_EXCEEDED")):
         return "Google's AI is busy right now. Wait a minute and try again; everything already read still works."
     if "GEMINI_API_KEY" in msg:
         return "The AI key is not set up on this server, so new files and questions can't be read. Everything already read still works."
@@ -299,10 +299,12 @@ with t1:
         if S.ai_calls >= MAX_AI_CALLS:
             st.error("AI call limit reached for this session.")
         else:
-            with st.spinner("Drafting..."):
+            with st.status("Drafting the request...") as box:
                 try:
                     S.ai_calls += 1
-                    d = extract.draft_rfx(brief)
+                    with extract.progress(lambda t: box.update(label=f"{t}...")):
+                        d = extract.draft_rfx(brief)
+                    box.update(label="Drafted", state="complete")
                     S.rfx = [dict(id=n, desc=i["description"], unit=i["unit"], qty=i["quantity"]) for n, i in enumerate(d["items"], 1)]
                     S.rfq = dict(no="Draft", title="New request (drafted with AI)", site="")
                     S.draft_extra = d
@@ -367,25 +369,27 @@ with t2:
                 for name, data in S.supp_files.items():
                     if name in S.supports:
                         continue
-                    st.write(f"Reading {name} ...")
+                    line = st.empty(); line.write(f"Reading {name} ...")
                     try:
                         if not extract.support_is_cached(data):
                             if S.ai_calls >= MAX_AI_CALLS:
                                 raise RuntimeError("AI call limit reached for this session")
                             S.ai_calls += 1
-                        S.supports[name] = extract.extract_support(name, data)
+                        with extract.progress(lambda t, n=name: line.write(f"Reading {n}: {t}...")):
+                            S.supports[name] = extract.extract_support(name, data)
                     except Exception as e:
                         S.read_errors.append(f"{name}: {friendly_error(e)}")
                 for n, name in enumerate(names):
                     if any(d.get("_file") == name for d in S.docs.values()):
                         continue
-                    st.write(f"Reading {name} ...")
+                    line = st.empty(); line.write(f"Reading {name} ...")
                     try:
                         if not extract.is_cached(S.files[name], S.rfx):
                             if S.ai_calls >= MAX_AI_CALLS:
                                 raise RuntimeError("AI call limit reached for this session")
                             S.ai_calls += 1
-                        doc = extract.extract_response(name, S.files[name], S.rfx)
+                        with extract.progress(lambda t, n=name: line.write(f"Reading {n}: {t}...")):
+                            doc = extract.extract_response(name, S.files[name], S.rfx)
                         S.docs[doc["vendor_name"]] = doc
                     except Exception as e:
                         S.read_errors.append(f"{name}: {friendly_error(e)}")
@@ -561,12 +565,19 @@ with t_ask:
                 st.error("AI call limit reached for this session.")
             else:
                 hist = [x for t in S.turns[-3:] for x in (("user", t["q"]), ("assistant", t["a"]))]
-                with st.spinner("Analysing..."):
+                with st.status("Asking the AI...", expanded=True) as box:
+                    shown = st.empty()
+                    def on_progress(text):
+                        box.update(label=f"{text}...")
+                        shown.caption("On the free tier a busy model is skipped and the next one tried; this can take up to a minute and a half.")
                     try:
                         S.ai_calls += 1
-                        ans, trace, model = ask(question, hist, docs, items, cells, vflags, S.last_year, S.log)
+                        with extract.progress(on_progress):
+                            ans, trace, model = ask(question, hist, docs, items, cells, vflags, S.last_year, S.log)
+                        box.update(label=f"Answered by {model}", state="complete")
                     except Exception as e:
                         ans, trace, model = friendly_error(e), [], None
+                        box.update(label="The AI could not answer", state="error")
                 S.turns.append(dict(n=len(S.turns) + 1, q=question, a=ans, trace=trace, model=model,
                                     at=pd.Timestamp.now(tz="Asia/Kolkata").strftime("%H:%M IST")))
                 st.rerun()
