@@ -12,7 +12,7 @@ def _load_helpers():
     and every helper after it, since each imports from the ones before."""
     needs = [("schema", ("SupportDoc",)), ("extract", ("generate", "extract_support", "support_is_cached")),
              ("normalize", ("attach_evidence", "match_vendor", "EVIDENCE_FLAGS")), ("analyst", ("ask", "EVIDENCE_FLAGS")),
-             ("award_pack", ("build",))]
+             ("award_pack", ("build",)), ("followup", ("draft", "questions"))]
     versions = {"analyst": 4}
     stale = False
     for name, names in needs:
@@ -34,6 +34,7 @@ import extract
 from normalize import build_cells, summarise, all_open_flags, vendor_eligibility, attach_evidence
 from analyst import ask, make_tools
 import award_pack
+import followup
 
 HERE = os.path.dirname(__file__)
 SAMPLE = os.path.join(HERE, "sample_data")
@@ -617,6 +618,27 @@ with t4:
     if not cells:
         st.info("Nothing to review yet.")
     else:
+        drafts = {v: d for v in docs if (d := followup.draft(v, short(v), docs[v], items, cells, vflags, S.get("rfq") or {}, S.last_year,
+                                                               S.get("who") or "Buyer"))}
+        if drafts:
+            with st.container(border=True):
+                section("Ask the vendors instead of guessing",
+                        f"Every open question becomes one email per vendor ({sum(d['points'] for d in drafts.values())} points across "
+                        f"{len(drafts)} vendors). Drafts update as you decide below: settle a point here and it leaves the email.")
+                fv = st.pills("Vendor", list(drafts), key="fu_vendor", default=list(drafts)[0],
+                              format_func=lambda v: f"{short(v)} ({drafts[v]['points']})", label_visibility="collapsed")
+                d = drafts.get(fv) or next(iter(drafts.values()))
+                st.markdown(f"**Subject:** {d['subject']}")
+                st.code(d["body"], language=None, wrap_lines=True)
+                f1, f2, _ = st.columns([1.3, 1.6, 2.5])
+                if f1.button("Mark as sent", key=f"fu_sent_{d['vendor']}", width="stretch",
+                             help="Recorded in the decision record. Sending itself is simulated in this prototype."):
+                    tot = split_total(S.resolutions, fx)
+                    record(d["vendor"], 0, "Follow-up email", f"Marked as sent ({d['points']} points)", d["subject"], tot, tot)
+                    st.toast(f"Recorded: follow-up to {short(d['vendor'])}")
+                f2.download_button("Download all drafts (.txt)", width="stretch", file_name="follow_up_emails.txt",
+                                   data="\n\n" .join(f"To: {short(x['vendor'])}\nSubject: {x['subject']}\n\n{x['body']}\n" + "-" * 60
+                                                       for x in drafts.values()))
         fl = all_open_flags(cells, vflags)
         if not fl:
             st.success("Nothing left to check. Every price is confirmed, converted or marked not quoted.")

@@ -192,6 +192,29 @@ def test_single_vendor_award():
     assert all(v["vendor"] != "Deccan Corrugators Pvt. Ltd." for v in open_["table"])                # fails the quality check
 
 
+def test_follow_up_emails():
+    import followup
+    d, _ = evidence()
+    c, vf = build_cells(d, items, G["fx"], ly, {})
+    rfq = dict(no="PLN-PKG-2026-041", title="Corrugated packaging")
+    deccan = followup.draft("Deccan Corrugators Pvt. Ltd.", "Deccan Corrugators", d["Deccan Corrugators Pvt. Ltd."], items, c, vf, rfq, ly, "Pooja",
+                            today=TODAY)
+    assert "Items 6-10: you quoted per 100 Pcs" in deccan["body"]                      # five per-100 items grouped into one point
+    assert "4% discount" in deccan["body"] and "freight" in deccan["body"] and "burst strength test report" in deccan["body"]
+    assert deccan["subject"].startswith("RFQ PLN-PKG-2026-041:") and "04 Oct 2026" in deccan["body"]          # reply-by = 3 days after TODAY (1 Oct)
+    pune = followup.draft("Pune Box Co.", "Pune Box", d["Pune Box Co."], items, c, vf, rfq, ly, "Pooja")
+    assert "items 13, 17, 28" in pune["body"] and "ISO 9001 certificate" in pune["body"]
+    om = followup.draft("Om Sai Packers", "Om Sai Packers", d["Om Sai Packers"], items, c, vf, rfq, ly, "Pooja")
+    assert "same as last year" in om["body"] and "Last year's rates, for reference" in om["body"]
+    # settling the points removes them; with everything decided only the unquoted items remain
+    res = {f["key"]: {"action": "accept"} for f in all_open_flags(c, vf)}
+    d2, _ = evidence(res=res)
+    c2, vf2 = build_cells(d2, items, G["fx"], ly, res)
+    assert followup.draft("Shree Packaging Industries", "Shree", d2["Shree Packaging Industries"], items, c2, vf2, rfq, ly, "P") is None
+    pune2 = followup.draft("Pune Box Co.", "Pune Box", d2["Pune Box Co."], items, c2, vf2, rfq, ly, "P")
+    assert pune2["points"] == 1 and "items 13, 17, 28" in pune2["body"]
+
+
 if __name__ == "__main__":
     for n, f in list(globals().items()):
         if n.startswith("test_"):
