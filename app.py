@@ -704,14 +704,23 @@ with t5:
         else:
             entries = list(reversed(S.log))
             a, b = pager(len(entries), 10, "log_page")
-            st.dataframe(pd.DataFrame([{"#": e["n"], "When": e["at"].replace(" IST", ""), "Vendor": e["vendor"], "Item": e["item"],
-                                        "Decision": e["decision"],
-                                        "Change to total": ("no change" if e["before"] == e["after"] else
-                                                            f"{'+' if e['after'] > e['before'] else '−'}{fmt_inr(abs(e['after'] - e['before']))}")
-                                        if None not in (e["before"], e["after"]) else "",
-                                        "Total after": fmt_inr(e["after"]), "What": e["what"], "Who": e["who"],
-                                        "Total before": fmt_inr(e["before"]), "Based on": e["source"]} for e in entries[a:b]]),
-                         hide_index=True, width="stretch", column_config={"#": st.column_config.NumberColumn(width=40)})
+            def change(e):
+                if None in (e["before"], e["after"]):
+                    return ""
+                return "no change" if e["before"] == e["after"] else f"{'+' if e['after'] > e['before'] else '−'}{fmt_inr(abs(e['after'] - e['before']))}"
+            st.dataframe(pd.DataFrame([{"#": e["n"], "When": pd.Timestamp(e["at"].replace(" IST", "")).strftime("%d %b, %H:%M") if e["at"] else "",
+                                        "Who": e["who"], "Vendor": e["vendor"], "Item": e["item"],
+                                        "Decision": (f"{e['what']}: {e['decision'][:1].lower()}{e['decision'][1:]}" if e["what"] else e["decision"]).replace("typed price Rs", "typed Rs"),
+                                        "Change": change(e), "Total after": fmt_inr(e["after"])} for e in entries[a:b]]),
+                         hide_index=True, width="stretch",
+                         column_config={"#": st.column_config.NumberColumn(width=34), "When": st.column_config.TextColumn(width=98),
+                                        "Who": st.column_config.TextColumn(width=62), "Vendor": st.column_config.TextColumn(width=140),
+                                        "Item": st.column_config.TextColumn(width=200), "Decision": st.column_config.TextColumn(width=232),
+                                        "Change": st.column_config.TextColumn("Change to total", width=110),
+                                        "Total after": st.column_config.TextColumn(width=86)})
+            with st.expander("What each decision was based on"):
+                for e in entries[a:b]:
+                    st.markdown(f"**#{e['n']}** · {e['vendor'] or 'Setting'} · {e['item'] or e['what']}  \n{e['source']}")
             active = [e for e in reversed(S.log) if e.get("key") in S.resolutions and not e["decision"].startswith("Undid")]
             seen, choices = set(), []
             for e in active:
